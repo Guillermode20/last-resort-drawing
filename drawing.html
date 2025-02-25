@@ -134,7 +134,7 @@
         }
 
         function connectWebSocket() {
-            ws = new WebSocket('ws://localhost:8000/ws/draw');
+            ws = new WebSocket('ws://34.148.39.39:8080/ws/draw');
 
             ws.onopen = () => {
                 status.textContent = 'Connected';

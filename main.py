@@ -4,10 +4,6 @@ import asyncio
 
 app = FastAPI()
 
-@app.get("/test")
-async def test_endpoint():
-    return {"message": "Test endpoint is working!"}
-
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, Set[WebSocket]] = {
@@ -125,4 +121,4 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8080)

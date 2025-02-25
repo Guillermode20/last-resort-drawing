@@ -49,7 +49,7 @@ Follow these instructions to set up the project on your local machine.
 To run the project, use the following command:
 
 ```sh
-uvicorn main:app --reload
+uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
 This command starts the Uvicorn server, using `main.py` as the entry point and enabling hot reloading for development.
