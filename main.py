@@ -1,6 +1,15 @@
+import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict, Set, List
 import asyncio
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('WebSocket-Server')
 
 app = FastAPI()
 
@@ -15,21 +24,35 @@ class ConnectionManager:
         self.state_version = 0  # Track state changes
         self.client_versions: Dict[WebSocket, int] = {}
         self.last_ping_times: Dict[WebSocket, float] = {}  # Track last ping time for each connection
+        logger.info("ConnectionManager initialized")
 
     async def connect(self, websocket: WebSocket, client_type: str):
+        client_info = f"Client connecting - Type: {client_type} | Client Address: {websocket.client.host}:{websocket.client.port}"
+        logger.info(client_info)
+        logger.debug(f"Current active connections before accept - Draw: {len(self.active_connections['draw'])} | Display: {len(self.active_connections['display'])}")
+        
         await websocket.accept()
         self.active_connections[client_type].add(websocket)
         self.client_versions[websocket] = 0  # New client starts at version 0
         self.last_ping_times[websocket] = asyncio.get_event_loop().time()
+        
+        logger.info(f"Client successfully connected - {client_info}")
+        logger.debug(f"New connection details - Headers: {websocket.headers}")
+        logger.debug(f"Updated active connections - Draw: {len(self.active_connections['draw'])} | Display: {len(self.active_connections['display'])}")
+        
         # Send current state to new client
+        state_size = len(self.drawing_state)
+        logger.debug(f"Sending initial state to new client - State size: {state_size} elements")
         await websocket.send_json({"type": "state", "state": self.drawing_state})
 
     def disconnect(self, websocket: WebSocket, client_type: str):
+        logger.info(f"Client disconnecting - Type: {client_type} | Client Address: {websocket.client.host}:{websocket.client.port}")
         self.active_connections[client_type].remove(websocket)
         if websocket in self.client_versions:
             del self.client_versions[websocket]
         if websocket in self.last_ping_times:
             del self.last_ping_times[websocket]
+        logger.debug(f"Updated active connections after disconnect - Draw: {len(self.active_connections['draw'])} | Display: {len(self.active_connections['display'])}")
 
     async def broadcast(self, message: dict, exclude: WebSocket = None):
         # Update drawing state for draw events
@@ -92,7 +115,12 @@ async def startup_event():
 
 @app.websocket("/ws/{client_type}")
 async def websocket_endpoint(websocket: WebSocket, client_type: str):
+    logger.info(f"New WebSocket connection request - Client Type: {client_type}")
+    logger.debug(f"Connection details - Client: {websocket.client.host}:{websocket.client.port}")
+    logger.debug(f"Headers: {websocket.headers}")
+    
     if client_type not in ['draw', 'display']:
+        logger.warning(f"Invalid client type attempted to connect: {client_type}")
         await websocket.close(code=1003)  # Unsupported data
         return
 
@@ -101,6 +129,7 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
     try:
         # If this is a new client, broadcast new-client event
         if client_type == 'draw':
+            logger.info(f"New drawing client connected - Broadcasting new-client event")
             await manager.broadcast({"type": "new-client"}, exclude=websocket)
 
         while True:
@@ -117,6 +146,7 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
             await manager.broadcast(data, exclude=websocket)
 
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected - Client Type: {client_type} | Address: {websocket.client.host}:{websocket.client.port}")
         manager.disconnect(websocket, client_type)
 
 if __name__ == "__main__":
