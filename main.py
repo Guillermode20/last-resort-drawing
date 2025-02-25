@@ -14,11 +14,13 @@ class ConnectionManager:
         self.last_update_time = 0
         self.state_version = 0  # Track state changes
         self.client_versions: Dict[WebSocket, int] = {}
+        self.last_ping_times: Dict[WebSocket, float] = {}  # Track last ping time for each connection
 
     async def connect(self, websocket: WebSocket, client_type: str):
         await websocket.accept()
         self.active_connections[client_type].add(websocket)
         self.client_versions[websocket] = 0  # New client starts at version 0
+        self.last_ping_times[websocket] = asyncio.get_event_loop().time()
         # Send current state to new client
         await websocket.send_json({"type": "state", "state": self.drawing_state})
 
@@ -26,6 +28,8 @@ class ConnectionManager:
         self.active_connections[client_type].remove(websocket)
         if websocket in self.client_versions:
             del self.client_versions[websocket]
+        if websocket in self.last_ping_times:
+            del self.last_ping_times[websocket]
 
     async def broadcast(self, message: dict, exclude: WebSocket = None):
         # Update drawing state for draw events
@@ -46,10 +50,27 @@ class ConnectionManager:
                     if message.get("type") in ["draw", "clear"]:
                         self.client_versions[connection] = self.state_version
 
+    async def check_connection(self, websocket: WebSocket) -> bool:
+        try:
+            await websocket.send_json({"type": "ping"})
+            return True
+        except:
+            return False
+
+    async def remove_dead_connections(self):
+        current_time = asyncio.get_event_loop().time()
+        for client_type in list(self.active_connections.keys()):
+            for connection in list(self.active_connections[client_type]):
+                # Check if connection hasn't responded in 30 seconds
+                if current_time - self.last_ping_times.get(connection, 0) > 30:
+                    if not await self.check_connection(connection):
+                        self.disconnect(connection, client_type)
+
     async def periodic_state_check(self):
         while True:
-            await asyncio.sleep(2)  # Check every 2 seconds instead of 1
+            await asyncio.sleep(2)  # Check every 2 seconds
             try:
+                await self.remove_dead_connections()  # Check for dead connections
                 for client_type in self.active_connections:
                     for connection in self.active_connections[client_type]:
                         # Only send updates to clients that are behind the current state
@@ -84,7 +105,15 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
 
         while True:
             data = await websocket.receive_json()
-            # Relay the message to all other clients
+            # Update last ping time when we receive any message
+            manager.last_ping_times[websocket] = asyncio.get_event_loop().time()
+            
+            # Handle ping messages specially
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+                
+            # Relay other messages to all other clients
             await manager.broadcast(data, exclude=websocket)
 
     except WebSocketDisconnect:
