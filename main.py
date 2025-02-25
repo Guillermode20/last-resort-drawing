@@ -119,6 +119,10 @@ manager = ConnectionManager()
 async def startup_event():
     asyncio.create_task(manager.periodic_state_check())
 
+@app.get("/test")
+async def test_endpoint():
+    return {"message": "Test endpoint is working"}
+
 @app.websocket("/ws/{client_type}")
 async def websocket_endpoint(websocket: WebSocket, client_type: str):
     logger.info(f"New WebSocket connection request - Client Type: {client_type}")
