@@ -4,6 +4,10 @@ import asyncio
 
 app = FastAPI()
 
+@app.get("/test")
+async def test_endpoint():
+    return {"message": "Test endpoint is working!"}
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, Set[WebSocket]] = {
