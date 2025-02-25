@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drawing Display</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #000;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: transparent;
+        }
+        #status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            background: rgba(0, 0, 0, 0.5);
+            color: #fff;
+            border-radius: 4px;
+            font-family: Arial, sans-serif;
+        }
+        #controls {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 4px;
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            padding: 5px 15px;
+            border: none;
+            border-radius: 4px;
+            background: #fff;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #eee;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="status">Connecting...</div>
+    <div id="controls">
+        <button onclick="clearCanvas()">Clear Canvas</button>
+        <button onclick="saveToLocalStorage()">Save State</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const status = document.getElementById('status');
+        let ws = null;
+        let drawingState = [];
+
+        const VIRTUAL_WIDTH = 1920;  // Fixed virtual canvas width
+        const VIRTUAL_HEIGHT = 1080; // Fixed virtual canvas height
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+
+        function initCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            updateScale();
+            loadFromLocalStorage();
+        }
+
+        function updateScale() {
+            const scaleX = canvas.width / VIRTUAL_WIDTH;
+            const scaleY = canvas.height / VIRTUAL_HEIGHT;
+            scale = Math.min(scaleX, scaleY);
+            
+            // Center the canvas
+            offsetX = (canvas.width - VIRTUAL_WIDTH * scale) / 2;
+            offsetY = (canvas.height - VIRTUAL_HEIGHT * scale) / 2;
+
+            // Apply transform
+            ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+        }
+
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:8000/ws/display');
+
+            ws.onopen = () => {
+                status.textContent = 'Connected';
+                // Announce presence to get current state
+                ws.send(JSON.stringify({ type: 'join', client: 'display' }));
+            };
+
+            ws.onclose = () => {
+                status.textContent = 'Disconnected - Reconnecting...';
+                setTimeout(connectWebSocket, 1000);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'new-client') {
+                    // Send complete state to new client
+                    ws.send(JSON.stringify({
+                        type: 'state',
+                        state: drawingState
+                    }));
+                } else if (data.type === 'draw') {
+                    drawLine(data.points, data.color, data.width);
+                    drawingState.push(data);
+                    saveToLocalStorage();
+                } else if (data.type === 'state') {
+                    // Received complete state
+                    drawingState = data.state;
+                    redrawCanvas();
+                } else if (data.type === 'clear') {
+                    clearCanvas();
+                }
+            };
+        }
+
+        function drawLine(points, color, width) {
+            if (points.length < 2) return;
+            
+            ctx.beginPath();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            
+            // Convert normalized coordinates back to virtual canvas space
+            ctx.moveTo(points[0].x * VIRTUAL_WIDTH, points[0].y * VIRTUAL_HEIGHT);
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i].x * VIRTUAL_WIDTH, points[i].y * VIRTUAL_HEIGHT);
+            }
+            ctx.stroke();
+        }
+
+        function redrawCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawingState.forEach(data => {
+                if (data.type === 'draw') {
+                    drawLine(data.points, data.color, data.width);
+                }
+            });
+        }
+
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawingState = [];
+            saveToLocalStorage();
+            ws.send(JSON.stringify({ type: 'clear' }));
+        }
+
+        function saveToLocalStorage() {
+            localStorage.setItem('drawingState', JSON.stringify(drawingState));
+        }
+
+        function loadFromLocalStorage() {
+            const saved = localStorage.getItem('drawingState');
+            if (saved) {
+                drawingState = JSON.parse(saved);
+                redrawCanvas();
+            }
+        }
+
+        window.onresize = () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            updateScale();
+            redrawCanvas();
+        };
+
+        initCanvas();
+        connectWebSocket();
+    </script>
+</body>
+</html>

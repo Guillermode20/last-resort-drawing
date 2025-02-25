@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drawing Interface</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #000;
+            touch-action: none;
+        }
+        #canvas {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100vw;
+            height: 100vh;
+            background: transparent;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+        }
+        #controls {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 4px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+            max-width: 90vw;
+        }
+        .color-btn {
+            width: 30px;
+            height: 30px;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        .color-btn.active {
+            transform: scale(1.2);
+        }
+        #width-control {
+            width: 100%;
+            margin: 10px 0;
+        }
+        button {
+            padding: 5px 15px;
+            border: none;
+            border-radius: 4px;
+            background: #fff;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #eee;
+        }
+        #status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            background: rgba(0, 0, 0, 0.5);
+            color: #fff;
+            border-radius: 4px;
+            font-family: Arial, sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="status">Connecting...</div>
+    <div id="controls">
+        <div class="color-btn active" style="background: #ff0000" data-color="#ff0000"></div>
+        <div class="color-btn" style="background: #00ff00" data-color="#00ff00"></div>
+        <div class="color-btn" style="background: #0000ff" data-color="#0000ff"></div>
+        <div class="color-btn" style="background: #ffff00" data-color="#ffff00"></div>
+        <div class="color-btn" style="background: #ff00ff" data-color="#ff00ff"></div>
+        <div class="color-btn" style="background: #00ffff" data-color="#00ffff"></div>
+        <div class="color-btn" style="background: #ffffff" data-color="#ffffff"></div>
+        <input type="range" id="width-control" min="1" max="50" value="5">
+        <button onclick="clearCanvas()">Clear</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const status = document.getElementById('status');
+        const widthControl = document.getElementById('width-control');
+        let ws = null;
+        let isDrawing = false;
+        let currentColor = '#ff0000';
+        let currentWidth = 5;
+        let currentPoints = [];
+
+        const VIRTUAL_WIDTH = 1920;  // Fixed virtual canvas width
+        const VIRTUAL_HEIGHT = 1080; // Fixed virtual canvas height
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+
+        function initCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            updateScale();
+        }
+
+        function updateScale() {
+            // Calculate the scale to fit the virtual canvas while maintaining aspect ratio
+            const containerAspectRatio = canvas.width / canvas.height;
+            const virtualAspectRatio = VIRTUAL_WIDTH / VIRTUAL_HEIGHT;
+            
+            if (containerAspectRatio > virtualAspectRatio) {
+                // Window is wider than needed
+                scale = canvas.height / VIRTUAL_HEIGHT;
+                offsetX = (canvas.width - VIRTUAL_WIDTH * scale) / 2;
+                offsetY = 0;
+            } else {
+                // Window is taller than needed
+                scale = canvas.width / VIRTUAL_WIDTH;
+                offsetX = 0;
+                offsetY = (canvas.height - VIRTUAL_HEIGHT * scale) / 2;
+            }
+
+            // Apply transform
+            ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+        }
+
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:8000/ws/draw');
+
+            ws.onopen = () => {
+                status.textContent = 'Connected';
+                // Request current state when connecting
+                ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
+            };
+
+            ws.onclose = () => {
+                status.textContent = 'Disconnected - Reconnecting...';
+                setTimeout(connectWebSocket, 1000);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'clear') {
+                    clearCanvas(false);
+                } else if (data.type === 'state') {
+                    // Received state from display, render it
+                    data.state.forEach(item => {
+                        if (item.type === 'draw') {
+                            const points = item.points;
+                            if (points.length === 1) {
+                                drawPoint({ x: points[0].x, y: points[0].y }, item.color, item.width);
+                            } else {
+                                // Draw the complete stroke with all points
+                                ctx.beginPath();
+                                ctx.strokeStyle = item.color;
+                                ctx.lineWidth = item.width;
+                                ctx.moveTo(points[0].x * VIRTUAL_WIDTH, points[0].y * VIRTUAL_HEIGHT);
+                                for (let i = 1; i < points.length; i++) {
+                                    ctx.lineTo(points[i].x * VIRTUAL_WIDTH, points[i].y * VIRTUAL_HEIGHT);
+                                }
+                                ctx.stroke();
+                            }
+                        }
+                    });
+                }
+            };
+        }
+
+        function startDrawing(e) {
+            isDrawing = true;
+            currentPoints = [];
+            const point = getPoint(e);
+            currentPoints.push(point);
+            ctx.beginPath();
+            ctx.strokeStyle = currentColor;
+            ctx.lineWidth = currentWidth;
+            ctx.moveTo(point.x * VIRTUAL_WIDTH, point.y * VIRTUAL_HEIGHT);
+        }
+
+        let batchTimeout = null;
+        let pendingPoints = [];
+
+        function draw(e) {
+            if (!isDrawing) return;
+            e.preventDefault();
+
+            const point = getPoint(e);
+            currentPoints.push(point);
+            
+            // Draw immediately on canvas with improved interpolation
+            if (currentPoints.length >= 2) {
+                const lastPoint = currentPoints[currentPoints.length - 2];
+                const currentPoint = point;
+                
+                // Calculate distance between points
+                const dx = currentPoint.x - lastPoint.x;
+                const dy = currentPoint.y - lastPoint.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                // Create interpolated points for smoother lines
+                const interpolatedPoints = [];
+                const minDistance = 0.002; // Smaller value for more precise interpolation
+                
+                if (dist > minDistance) {
+                    const steps = Math.ceil(dist / minDistance);
+                    for (let i = 0; i <= steps; i++) {
+                        const t = i / steps;
+                        interpolatedPoints.push({
+                            x: lastPoint.x + dx * t,
+                            y: lastPoint.y + dy * t
+                        });
+                    }
+                } else {
+                    interpolatedPoints.push(currentPoint);
+                }
+                
+                // Draw the interpolated points
+                ctx.beginPath();
+                ctx.strokeStyle = currentColor;
+                ctx.lineWidth = currentWidth;
+                ctx.moveTo(lastPoint.x * VIRTUAL_WIDTH, lastPoint.y * VIRTUAL_HEIGHT);
+                
+                interpolatedPoints.forEach(p => {
+                    ctx.lineTo(p.x * VIRTUAL_WIDTH, p.y * VIRTUAL_HEIGHT);
+                    pendingPoints.push(p);
+                });
+                
+                ctx.stroke();
+            }
+
+            // Send points more frequently with smaller batches
+            if (!batchTimeout) {
+                batchTimeout = setTimeout(() => {
+                    if (pendingPoints.length > 0) {
+                        const pointsToSend = pendingPoints.slice();
+                        pendingPoints = [];
+                        ws.send(JSON.stringify({
+                            type: 'draw',
+                            points: pointsToSend,
+                            color: currentColor,
+                            width: currentWidth
+                        }));
+                    }
+                    batchTimeout = null;
+                }, 1);
+            }
+        }
+
+        function endDrawing() {
+            if (!isDrawing) return;
+            isDrawing = false;
+        
+            // Clear any pending batch timeout
+            if (batchTimeout) {
+                clearTimeout(batchTimeout);
+                batchTimeout = null;
+            }
+        
+            // Send any remaining points
+            if (pendingPoints.length > 0) {
+                ws.send(JSON.stringify({
+                    type: 'draw',
+                    points: pendingPoints,
+                    color: currentColor,
+                    width: currentWidth
+                }));
+                pendingPoints = [];
+            }
+        }
+
+        function getPoint(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = (e.touches ? e.touches[0].clientX : e.clientX);
+            const y = (e.touches ? e.touches[0].clientY : e.clientY);
+            
+            // Convert screen coordinates to canvas coordinates
+            const canvasX = x - rect.left;
+            const canvasY = y - rect.top;
+            
+            // Convert to virtual canvas coordinates (removing the offset and scale)
+            const virtualX = (canvasX - offsetX) / scale;
+            const virtualY = (canvasY - offsetY) / scale;
+            
+            // Normalize to 0-1 range and clamp
+            return {
+                x: Math.max(0, Math.min(1, virtualX / VIRTUAL_WIDTH)),
+                y: Math.max(0, Math.min(1, virtualY / VIRTUAL_HEIGHT))
+            };
+        }
+
+        function drawPoint(point, color = currentColor, width = currentWidth) {
+            ctx.beginPath();
+            ctx.fillStyle = color;
+            ctx.arc(point.x * VIRTUAL_WIDTH, point.y * VIRTUAL_HEIGHT, width / 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function drawLine(points, color, width) {
+            ctx.beginPath();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.moveTo(points[0].x * VIRTUAL_WIDTH, points[0].y * VIRTUAL_HEIGHT);
+            ctx.lineTo(points[1].x * VIRTUAL_WIDTH, points[1].y * VIRTUAL_HEIGHT);
+            ctx.stroke();
+        }
+
+        function clearCanvas(broadcast = true) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (broadcast) {
+                ws.send(JSON.stringify({ type: 'clear' }));
+            }
+        }
+
+        // Event Listeners
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mouseup', endDrawing);
+        canvas.addEventListener('mouseleave', endDrawing);
+
+        canvas.addEventListener('touchstart', startDrawing);
+        canvas.addEventListener('touchmove', draw);
+        canvas.addEventListener('touchend', endDrawing);
+
+        document.querySelectorAll('.color-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelector('.color-btn.active').classList.remove('active');
+                btn.classList.add('active');
+                currentColor = btn.dataset.color;
+            });
+        });
+
+        widthControl.addEventListener('input', (e) => {
+            currentWidth = parseInt(e.target.value);
+        });
+
+        window.onresize = () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            updateScale();
+            redrawCanvas();
+        };
+
+        function redrawCanvas() {
+            // Clear with proper transform
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            // Request current state
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
+            }
+        }
+
+        initCanvas();
+        connectWebSocket();
+    </script>
+</body>
+</html>
