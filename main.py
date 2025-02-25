@@ -11,6 +11,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger('WebSocket-Server')
 
+# Add StreamHandler to ensure logging outputs to the terminal
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.DEBUG)
+stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s'))
+logger.addHandler(stream_handler)
+
 app = FastAPI()
 
 class ConnectionManager:
