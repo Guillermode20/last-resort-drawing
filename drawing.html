@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Drawing Interface</title>
+    <title>Drawing Interface with Zoom</title>
     <style>
         body {
             margin: 0;
@@ -20,25 +20,25 @@
             width: 100vw;
             height: 100vh;
             background: transparent;
-            border: 2px solid rgba(255, 255, 255, 0.3);
+            border: none;
         }
         #controls {
             position: fixed;
-            bottom: 10px;
             left: 50%;
             transform: translateX(-50%);
             background: rgba(0, 0, 0, 0.5);
-            padding: 10px;
+            padding: 5px;
             border-radius: 4px;
             display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
+            gap: 5px;
+            flex-wrap: nowrap;
             justify-content: center;
             max-width: 90vw;
+            z-index: 1000;
         }
         .color-btn {
-            width: 30px;
-            height: 30px;
+            width: 25px;
+            height: 25px;
             border: 2px solid #fff;
             border-radius: 50%;
             cursor: pointer;
@@ -47,8 +47,8 @@
             transform: scale(1.2);
         }
         #width-control {
-            width: 100%;
-            margin: 10px 0;
+            width: 100px;
+            margin: 0 5px;
         }
         button {
             padding: 5px 15px;
@@ -70,6 +70,25 @@
             border-radius: 4px;
             font-family: Arial, sans-serif;
         }
+        #zoom-controls {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 5px;
+            border-radius: 4px;
+            display: flex;
+            gap: 5px;
+            z-index: 1000;
+        }
+        #zoom-value {
+            color: white;
+            font-family: Arial, sans-serif;
+            margin: 0 5px;
+            min-width: 50px;
+            text-align: center;
+            line-height: 30px;
+        }
     </style>
 </head>
 <body>
@@ -86,23 +105,38 @@
         <input type="range" id="width-control" min="1" max="50" value="5">
         <button onclick="clearCanvas()">Clear</button>
     </div>
+    <div id="zoom-controls">
+        <button onclick="adjustZoom(0.1)">+</button>
+        <span id="zoom-value">100%</span>
+        <button onclick="adjustZoom(-0.1)">-</button>
+        <button onclick="resetZoom()">Reset</button>
+    </div>
 
     <script>
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         const status = document.getElementById('status');
         const widthControl = document.getElementById('width-control');
+        const zoomValueDisplay = document.getElementById('zoom-value');
         let ws = null;
         let isDrawing = false;
         let currentColor = '#ff0000';
         let currentWidth = 5;
         let currentPoints = [];
+        let drawingState = []; // Store drawing state locally
 
         const VIRTUAL_WIDTH = 1920;  // Fixed virtual canvas width
         const VIRTUAL_HEIGHT = 1080; // Fixed virtual canvas height
         let scale = 1;
+        let zoomLevel = 1;  // New zoom level variable
         let offsetX = 0;
         let offsetY = 0;
+        let panOffsetX = 0;  // Additional offset for panning
+        let panOffsetY = 0;
+        
+        // For panning functionality
+        let isPanning = false;
+        let lastPanPoint = { x: 0, y: 0 };
 
         function initCanvas() {
             canvas.width = window.innerWidth;
@@ -113,24 +147,142 @@
         }
 
         function updateScale() {
-            // Calculate the scale to fit the virtual canvas while maintaining aspect ratio
+            // Calculate the base scale to fit the virtual canvas while maintaining aspect ratio
             const containerAspectRatio = canvas.width / canvas.height;
             const virtualAspectRatio = VIRTUAL_WIDTH / VIRTUAL_HEIGHT;
             
+            let baseScale;
             if (containerAspectRatio > virtualAspectRatio) {
                 // Window is wider than needed
-                scale = canvas.height / VIRTUAL_HEIGHT;
-                offsetX = (canvas.width - VIRTUAL_WIDTH * scale) / 2;
+                baseScale = canvas.height / VIRTUAL_HEIGHT;
+                offsetX = (canvas.width - VIRTUAL_WIDTH * baseScale) / 2;
                 offsetY = 0;
             } else {
                 // Window is taller than needed
-                scale = canvas.width / VIRTUAL_WIDTH;
+                baseScale = canvas.width / VIRTUAL_WIDTH;
                 offsetX = 0;
-                offsetY = (canvas.height - VIRTUAL_HEIGHT * scale) / 2;
+                offsetY = (canvas.height - VIRTUAL_HEIGHT * baseScale) / 2;
             }
 
-            // Apply transform
-            ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+            // Apply the zoom level to the base scale
+            scale = baseScale * zoomLevel;
+            
+            // Recalculate offsets with zoom and pan
+            const zoomedWidth = VIRTUAL_WIDTH * scale;
+            const zoomedHeight = VIRTUAL_HEIGHT * scale;
+            
+            // Calculate center point
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            
+            // Apply transform with zoom and pan
+            ctx.setTransform(
+                scale, 0, 0, scale, 
+                centerX - (VIRTUAL_WIDTH / 2 * scale) + panOffsetX,
+                centerY - (VIRTUAL_HEIGHT / 2 * scale) + panOffsetY
+            );
+            
+            // Position controls below virtual canvas
+            updateControlsPosition();
+        }
+
+        function clearAndDrawBorder() {
+            // Clear the entire canvas
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.restore();
+            
+            // Draw border around virtual canvas
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 2 / zoomLevel; // Adjust border width based on zoom
+            ctx.strokeRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+        }
+
+        function updateControlsPosition() {
+            const controls = document.getElementById('controls');
+            // Position controls at the bottom of the screen
+            controls.style.bottom = '10px';
+            controls.style.top = 'auto';
+        }
+
+        function adjustZoom(delta) {
+            const newZoom = Math.max(0.1, Math.min(5, zoomLevel + delta));
+            zoomLevel = newZoom;
+            zoomValueDisplay.textContent = `${Math.round(zoomLevel * 100)}%`;
+            updateScale();
+            redrawCanvasWithState();
+        }
+
+        function resetZoom() {
+            zoomLevel = 1;
+            panOffsetX = 0;
+            panOffsetY = 0;
+            zoomValueDisplay.textContent = '100%';
+            updateScale();
+            redrawCanvasWithState();
+        }
+
+        function startPanning(e) {
+            if (e.button === 1 || (e.button === 0 && e.altKey)) { // Middle button or Alt+Left click
+                isPanning = true;
+                const x = e.touches ? e.touches[0].clientX : e.clientX;
+                const y = e.touches ? e.touches[0].clientY : e.clientY;
+                lastPanPoint = { x, y };
+                e.preventDefault();
+            }
+        }
+
+        function pan(e) {
+            if (!isPanning) return;
+            e.preventDefault();
+
+            const x = e.touches ? e.touches[0].clientX : e.clientX;
+            const y = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            const dx = x - lastPanPoint.x;
+            const dy = y - lastPanPoint.y;
+            
+            panOffsetX += dx;
+            panOffsetY += dy;
+            
+            lastPanPoint = { x, y };
+            
+            updateScale();
+            redrawCanvasWithState();
+        }
+
+        function endPanning() {
+            isPanning = false;
+        }
+
+        function handleWheel(e) {
+            e.preventDefault();
+            const delta = e.deltaY < 0 ? 0.1 : -0.1;
+            adjustZoom(delta);
+        }
+
+        function redrawCanvasWithState() {
+            // Clear with proper transform and draw border
+            clearAndDrawBorder();
+
+            // Redraw all stored strokes
+            drawingState.forEach(item => {
+                const points = item.points;
+                if (points.length === 1) {
+                    drawPoint({ x: points[0].x, y: points[0].y }, item.color, item.width);
+                } else {
+                    // Draw the complete stroke with all points
+                    ctx.beginPath();
+                    ctx.strokeStyle = item.color;
+                    ctx.lineWidth = item.width;
+                    ctx.moveTo(points[0].x * VIRTUAL_WIDTH, points[0].y * VIRTUAL_HEIGHT);
+                    for (let i = 1; i < points.length; i++) {
+                        ctx.lineTo(points[i].x * VIRTUAL_WIDTH, points[i].y * VIRTUAL_HEIGHT);
+                    }
+                    ctx.stroke();
+                }
+            });
         }
 
         function connectWebSocket() {
@@ -161,26 +313,12 @@
                     const data = JSON.parse(event.data);
                     if (data.type === 'clear') {
                         clearCanvas(false);
+                        drawingState = []; // Clear local state
                     } else if (data.type === 'state') {
-                        // Received state from display, render it
-                        data.state.forEach(item => {
-                            if (item.type === 'draw') {
-                                const points = item.points;
-                                if (points.length === 1) {
-                                    drawPoint({ x: points[0].x, y: points[0].y }, item.color, item.width);
-                                } else {
-                                    // Draw the complete stroke with all points
-                                    ctx.beginPath();
-                                    ctx.strokeStyle = item.color;
-                                    ctx.lineWidth = item.width;
-                                    ctx.moveTo(points[0].x * VIRTUAL_WIDTH, points[0].y * VIRTUAL_HEIGHT);
-                                    for (let i = 1; i < points.length; i++) {
-                                        ctx.lineTo(points[i].x * VIRTUAL_WIDTH, points[i].y * VIRTUAL_HEIGHT);
-                                    }
-                                    ctx.stroke();
-                                }
-                            }
-                        });
+                        // Update local state
+                        drawingState = data.state.filter(item => item.type === 'draw');
+                        // Redraw with the new state
+                        redrawCanvasWithState();
                     }
                 };
             }
@@ -189,6 +327,9 @@
         }
 
         function startDrawing(e) {
+            // Don't start drawing if we're panning
+            if (isPanning || (e.button === 1 || (e.button === 0 && e.altKey))) return;
+            
             isDrawing = true;
             currentPoints = [];
             const point = getPoint(e);
@@ -203,7 +344,7 @@
         let pendingPoints = [];
 
         function draw(e) {
-            if (!isDrawing) return;
+            if (!isDrawing || isPanning) return;
             e.preventDefault();
 
             const point = getPoint(e);
@@ -256,12 +397,18 @@
                     if (pendingPoints.length > 0) {
                         const pointsToSend = pendingPoints.slice();
                         pendingPoints = [];
-                        ws.send(JSON.stringify({
+                        const drawData = {
                             type: 'draw',
                             points: pointsToSend,
                             color: currentColor,
                             width: currentWidth
-                        }));
+                        };
+                        
+                        // Send to server
+                        ws.send(JSON.stringify(drawData));
+                        
+                        // Add to local drawing state
+                        drawingState.push(drawData);
                     }
                     batchTimeout = null;
                 }, 1);
@@ -280,12 +427,15 @@
         
             // Send any remaining points
             if (pendingPoints.length > 0) {
-                ws.send(JSON.stringify({
+                const drawData = {
                     type: 'draw',
                     points: pendingPoints,
                     color: currentColor,
                     width: currentWidth
-                }));
+                };
+                
+                ws.send(JSON.stringify(drawData));
+                drawingState.push(drawData);
                 pendingPoints = [];
             }
         }
@@ -295,18 +445,17 @@
             const x = (e.touches ? e.touches[0].clientX : e.clientX);
             const y = (e.touches ? e.touches[0].clientY : e.clientY);
             
-            // Convert screen coordinates to canvas coordinates
-            const canvasX = x - rect.left;
-            const canvasY = y - rect.top;
+            // Get the current transform matrix
+            const transform = ctx.getTransform();
             
-            // Convert to virtual canvas coordinates (removing the offset and scale)
-            const virtualX = (canvasX - offsetX) / scale;
-            const virtualY = (canvasY - offsetY) / scale;
+            // Convert screen coordinates to canvas coordinates
+            const transformedX = (x - transform.e) / transform.a;
+            const transformedY = (y - transform.f) / transform.d;
             
             // Normalize to 0-1 range and clamp
             return {
-                x: Math.max(0, Math.min(1, virtualX / VIRTUAL_WIDTH)),
-                y: Math.max(0, Math.min(1, virtualY / VIRTUAL_HEIGHT))
+                x: Math.max(0, Math.min(1, transformedX / VIRTUAL_WIDTH)),
+                y: Math.max(0, Math.min(1, transformedY / VIRTUAL_HEIGHT))
             };
         }
 
@@ -317,31 +466,74 @@
             ctx.fill();
         }
 
-        function drawLine(points, color, width) {
-            ctx.beginPath();
-            ctx.strokeStyle = color;
-            ctx.lineWidth = width;
-            ctx.moveTo(points[0].x * VIRTUAL_WIDTH, points[0].y * VIRTUAL_HEIGHT);
-            ctx.lineTo(points[1].x * VIRTUAL_WIDTH, points[1].y * VIRTUAL_HEIGHT);
-            ctx.stroke();
-        }
-
         function clearCanvas(broadcast = true) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            clearAndDrawBorder();
+            drawingState = []; // Clear local state
             if (broadcast) {
                 ws.send(JSON.stringify({ type: 'clear' }));
             }
         }
 
-        // Event Listeners
-        canvas.addEventListener('mousedown', startDrawing);
-        canvas.addEventListener('mousemove', draw);
-        canvas.addEventListener('mouseup', endDrawing);
-        canvas.addEventListener('mouseleave', endDrawing);
+        function redrawCanvas() {
+            // Request current state
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                connectWebSocket();
+                return;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
+            }
+        }
 
-        canvas.addEventListener('touchstart', startDrawing);
-        canvas.addEventListener('touchmove', draw);
-        canvas.addEventListener('touchend', endDrawing);
+        // Event Listeners
+        canvas.addEventListener('mousedown', function(e) {
+            if (e.button === 1 || (e.button === 0 && e.altKey)) {
+                startPanning(e);
+            } else {
+                startDrawing(e);
+            }
+        });
+        canvas.addEventListener('mousemove', function(e) {
+            if (isPanning) {
+                pan(e);
+            } else {
+                draw(e);
+            }
+        });
+        canvas.addEventListener('mouseup', function(e) {
+            if (isPanning) {
+                endPanning();
+            } else {
+                endDrawing();
+            }
+        });
+        canvas.addEventListener('mouseleave', function() {
+            endPanning();
+            endDrawing();
+        });
+
+        // Touch events
+        canvas.addEventListener('touchstart', function(e) {
+            if (e.touches.length === 2) {
+                startPanning(e);
+            } else {
+                startDrawing(e);
+            }
+        });
+        canvas.addEventListener('touchmove', function(e) {
+            if (e.touches.length === 2) {
+                pan(e);
+            } else {
+                draw(e);
+            }
+        });
+        canvas.addEventListener('touchend', function() {
+            endPanning();
+            endDrawing();
+        });
+
+        // Wheel event for zooming
+        canvas.addEventListener('wheel', handleWheel, { passive: false });
 
         document.querySelectorAll('.color-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -359,25 +551,19 @@
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
             updateScale();
-            redrawCanvas();
+            redrawCanvasWithState();
         };
 
-        function redrawCanvas() {
-            // Clear with proper transform
-            ctx.save();
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.restore();
-
-            // Request current state
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-                connectWebSocket();
-                return;
+        // Add keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === '=' || e.key === '+') {
+                adjustZoom(0.1);
+            } else if (e.key === '-' || e.key === '_') {
+                adjustZoom(-0.1);
+            } else if (e.key === '0') {
+                resetZoom();
             }
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
-            }
-        }
+        });
 
         initCanvas();
         connectWebSocket();
