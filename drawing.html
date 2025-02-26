@@ -134,45 +134,58 @@
         }
 
         function connectWebSocket() {
-            ws = new WebSocket('ws://34.148.39.39:8080/ws/draw');
+            const localWsUrl = 'ws://127.0.0.1:8000/ws/draw';
+            const gcpWsUrl = 'ws://34.148.39.39:8080/ws/draw';
+            let wsUrl = null;
 
-            ws.onopen = () => {
-                status.textContent = 'Connected';
-                // Request current state when connecting
-                ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
-            };
+            function attemptConnection(url) {
+                wsUrl = url;
+                ws = new WebSocket(url);
 
-            ws.onclose = () => {
-                status.textContent = 'Disconnected - Reconnecting...';
-                setTimeout(connectWebSocket, 1000);
-            };
+                ws.onopen = () => {
+                    status.textContent = 'Connected to: ' + url;
+                    // Request current state when connecting
+                    ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
+                };
 
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                if (data.type === 'clear') {
-                    clearCanvas(false);
-                } else if (data.type === 'state') {
-                    // Received state from display, render it
-                    data.state.forEach(item => {
-                        if (item.type === 'draw') {
-                            const points = item.points;
-                            if (points.length === 1) {
-                                drawPoint({ x: points[0].x, y: points[0].y }, item.color, item.width);
-                            } else {
-                                // Draw the complete stroke with all points
-                                ctx.beginPath();
-                                ctx.strokeStyle = item.color;
-                                ctx.lineWidth = item.width;
-                                ctx.moveTo(points[0].x * VIRTUAL_WIDTH, points[0].y * VIRTUAL_HEIGHT);
-                                for (let i = 1; i < points.length; i++) {
-                                    ctx.lineTo(points[i].x * VIRTUAL_WIDTH, points[i].y * VIRTUAL_HEIGHT);
+                ws.onclose = () => {
+                    status.textContent = 'Disconnected from: ' + url + ' - Trying other server...';
+                    if (wsUrl === localWsUrl) {
+                        attemptConnection(gcpWsUrl);
+                    } else {
+                        status.textContent = 'Failed to connect to both servers.';
+                    }
+                };
+
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'clear') {
+                        clearCanvas(false);
+                    } else if (data.type === 'state') {
+                        // Received state from display, render it
+                        data.state.forEach(item => {
+                            if (item.type === 'draw') {
+                                const points = item.points;
+                                if (points.length === 1) {
+                                    drawPoint({ x: points[0].x, y: points[0].y }, item.color, item.width);
+                                } else {
+                                    // Draw the complete stroke with all points
+                                    ctx.beginPath();
+                                    ctx.strokeStyle = item.color;
+                                    ctx.lineWidth = item.width;
+                                    ctx.moveTo(points[0].x * VIRTUAL_WIDTH, points[0].y * VIRTUAL_HEIGHT);
+                                    for (let i = 1; i < points.length; i++) {
+                                        ctx.lineTo(points[i].x * VIRTUAL_WIDTH, points[i].y * VIRTUAL_HEIGHT);
+                                    }
+                                    ctx.stroke();
                                 }
-                                ctx.stroke();
                             }
-                        }
-                    });
-                }
-            };
+                        });
+                    }
+                };
+            }
+
+            attemptConnection(localWsUrl);
         }
 
         function startDrawing(e) {
@@ -357,6 +370,10 @@
             ctx.restore();
 
             // Request current state
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                connectWebSocket();
+                return;
+            }
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
             }

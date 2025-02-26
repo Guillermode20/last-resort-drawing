@@ -96,40 +96,53 @@
         }
 
         function connectWebSocket() {
-            ws = new WebSocket('ws://34.148.39.39:8080/ws/display');
+            const localWsUrl = 'ws://127.0.0.1:8000/ws/display';
+            const gcpWsUrl = 'ws://34.148.39.39:8080/ws/display';
+            let wsUrl = null;
 
-            ws.onopen = () => {
-                status.textContent = 'Connected';
-                // Announce presence to get current state
-                ws.send(JSON.stringify({ type: 'join', client: 'display' }));
-            };
+            function attemptConnection(url) {
+                wsUrl = url;
+                ws = new WebSocket(url);
 
-            ws.onclose = () => {
-                status.textContent = 'Disconnected - Reconnecting...';
-                setTimeout(connectWebSocket, 1000);
-            };
+                ws.onopen = () => {
+                    status.textContent = 'Connected to: ' + url;
+                    // Announce presence to get current state
+                    ws.send(JSON.stringify({ type: 'join', client: 'display' }));
+                };
 
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                
-                if (data.type === 'new-client') {
-                    // Send complete state to new client
-                    ws.send(JSON.stringify({
-                        type: 'state',
-                        state: drawingState
-                    }));
-                } else if (data.type === 'draw') {
-                    drawLine(data.points, data.color, data.width);
-                    drawingState.push(data);
-                    saveToLocalStorage();
-                } else if (data.type === 'state') {
-                    // Received complete state
-                    drawingState = data.state;
-                    redrawCanvas();
-                } else if (data.type === 'clear') {
-                    clearCanvas();
-                }
-            };
+                ws.onclose = () => {
+                    status.textContent = 'Disconnected from: ' + url + ' - Trying other server...';
+                    if (wsUrl === localWsUrl) {
+                        attemptConnection(gcpWsUrl);
+                    } else {
+                        status.textContent = 'Failed to connect to both servers.';
+                    }
+                };
+
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'new-client') {
+                        // Send complete state to new client
+                        ws.send(JSON.stringify({
+                            type: 'state',
+                            state: drawingState
+                        }));
+                    } else if (data.type === 'draw') {
+                        drawLine(data.points, data.color, data.width);
+                        drawingState.push(data);
+                        saveToLocalStorage();
+                    } else if (data.type === 'state') {
+                        // Received complete state
+                        drawingState = data.state;
+                        redrawCanvas();
+                    } else if (data.type === 'clear') {
+                        clearCanvas();
+                    }
+                };
+            }
+
+            attemptConnection(localWsUrl);
         }
 
         function drawLine(points, color, width) {
