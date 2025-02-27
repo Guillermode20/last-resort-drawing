@@ -316,19 +316,14 @@ const NetworkManager = (function () {
             try {
                 console.log("Sending undo request to server");
 
-                // Send both binary and JSON format for maximum compatibility
-                // Binary message
+                // Send binary message for undo request only
                 const buffer = new ArrayBuffer(5); // 1 byte for type, 4 bytes for version
                 const view = new DataView(buffer);
                 view.setUint8(0, 3); // Type 3 = undo
                 view.setUint32(1, DrawingManager.getStateVersion() || 0, false);
                 ws.send(buffer);
 
-                // Also send as JSON for debugging and fallback
-                ws.send(JSON.stringify({
-                    type: 'undo',
-                    version: DrawingManager.getStateVersion() || 0
-                }));
+                // Removed JSON format to optimize data serialization
             } catch (error) {
                 console.error("Error sending undo data:", error);
             }
