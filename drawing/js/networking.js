@@ -20,6 +20,7 @@ const NetworkManager = (function () {
             }
 
             ws = new WebSocket(url);
+            ws.binaryType = "arraybuffer";
 
             ws.onopen = () => {
                 updateStatus('Connected to: ' + url);
@@ -52,10 +53,94 @@ const NetworkManager = (function () {
                 updateStatus(`Error on ${url} - Will try to reconnect`);
             };
 
-            ws.onmessage = handleMessage;
+            ws.onmessage = (event) => {
+                if (typeof event.data === "string") {
+                    try {
+                        const data = JSON.parse(event.data);
+
+                        if (data.type === 'ping') {
+                            ws.send(JSON.stringify({
+                                type: 'pong',
+                                timestamp: data.timestamp
+                            }));
+                            return;
+                        }
+
+                        if (data.type === 'heartbeat') {
+                            lastHeartbeat = Date.now();
+                            return;
+                        }
+
+                        if (data.type === 'draw') {
+                            // Process drawing data from other clients
+                            DrawingManager.processRemoteDrawing(data);
+                            // Update state version if the received version is newer
+                            if (data.version && data.version > DrawingManager.getStateVersion()) {
+                                DrawingManager.updateStateVersion(data.version);
+                            }
+                        } else if (data.type === 'clear') {
+                            // Always respect the server's state version
+                            if (data.version && data.version > DrawingManager.getStateVersion()) {
+                                DrawingManager.updateStateVersion(data.version);
+                                DrawingManager.clearCanvas(false);
+                            }
+                        } else if (data.type === 'state') {
+                            // State from server is authoritative - always apply it and update our version
+                            DrawingManager.updateDrawingState(data.state, data.version);
+                            console.log(`Received state from server with version ${data.version}, state size: ${data.state.length}`);
+                        }
+                    } catch (error) {
+                        console.error("Error processing message:", error);
+                    }
+                } else if (event.data instanceof ArrayBuffer) {
+                    const msg = decodeDrawingMessage(event.data);
+                    if (msg.type === 'draw') {
+                        DrawingManager.processRemoteDrawing(msg);
+                        if (msg.version && msg.version > DrawingManager.getStateVersion()) {
+                            DrawingManager.updateStateVersion(msg.version);
+                        }
+                    } else if (msg.type === 'clear') {
+                        if (msg.version && msg.version > DrawingManager.getStateVersion()) {
+                            DrawingManager.updateStateVersion(msg.version);
+                            DrawingManager.clearCanvas(false);
+                        }
+                    }
+                }
+            };
         }
 
         attemptConnection(localWsUrl);
+    }
+
+    function decodeDrawingMessage(buffer) {
+        const view = new DataView(buffer);
+        let offset = 0;
+        const msgType = view.getUint8(offset);
+        offset += 1;
+        if (msgType === 1) {
+            const version = view.getUint32(offset, false);
+            offset += 4;
+            const colorInt = view.getUint32(offset, false);
+            offset += 4;
+            const color = '#' + colorInt.toString(16).padStart(6, '0');
+            const width = view.getFloat32(offset, false);
+            offset += 4;
+            const numPoints = view.getUint32(offset, false);
+            offset += 4;
+            const points = [];
+            for (let i = 0; i < numPoints; i++) {
+                const x = view.getFloat32(offset, false);
+                offset += 4;
+                const y = view.getFloat32(offset, false);
+                offset += 4;
+                points.push({ x, y });
+            }
+            return { type: 'draw', version, color, width, points };
+        } else if (msgType === 2) {
+            const version = view.getUint32(offset, false);
+            return { type: 'clear', version };
+        }
+        return {};
     }
 
     function handleMessage(event) {
@@ -178,7 +263,21 @@ const NetworkManager = (function () {
     function sendDrawing(drawData) {
         if (ws && ws.readyState === WebSocket.OPEN) {
             try {
-                ws.send(JSON.stringify(drawData));
+                const numPoints = drawData.points.length;
+                const buffer = new ArrayBuffer(17 + numPoints * 8);
+                const view = new DataView(buffer);
+                let offset = 0;
+                view.setUint8(offset, 1); offset += 1;
+                view.setUint32(offset, drawData.version || 0, false); offset += 4;
+                const colorInt = parseInt(drawData.color.slice(1), 16);
+                view.setUint32(offset, colorInt, false); offset += 4;
+                view.setFloat32(offset, drawData.width, false); offset += 4;
+                view.setUint32(offset, numPoints, false); offset += 4;
+                for (let i = 0; i < numPoints; i++) {
+                    view.setFloat32(offset, drawData.points[i].x, false); offset += 4;
+                    view.setFloat32(offset, drawData.points[i].y, false); offset += 4;
+                }
+                ws.send(buffer);
             } catch (error) {
                 console.error("Error sending drawing data:", error);
             }

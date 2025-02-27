@@ -1,8 +1,10 @@
+import json
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict, Set, List, Optional, Any
 import asyncio
 import time
+import struct
 
 def setup_logger(name: str) -> logging.Logger:
     """Configure and return a logger with the given name."""
@@ -27,6 +29,24 @@ def setup_logger(name: str) -> logging.Logger:
 logger = setup_logger('WebSocket-Server')
 
 app = FastAPI()
+
+def decode_draw_message(binary_data: bytes) -> dict:
+    # Decode binary drawing message:
+    header_size = struct.calcsize('!B I I f I')  # type, version, color, width, num_points
+    msg_type, version, color_int, width, num_points = struct.unpack('!B I I f I', binary_data[:header_size])
+    if msg_type == 1:
+        points = []
+        point_size = struct.calcsize('!f f')
+        offset = header_size
+        for _ in range(num_points):
+            x, y = struct.unpack('!f f', binary_data[offset:offset+point_size])
+            points.append({'x': x, 'y': y})
+            offset += point_size
+        color = f"#{color_int:06x}"
+        return {"type": "draw", "version": version, "color": color, "width": width, "points": points}
+    elif msg_type == 2:
+        return {"type": "clear", "version": version}
+    return {}
 
 class ConnectionManager:
     """Manages WebSocket connections, client state tracking and broadcasting."""
@@ -105,6 +125,11 @@ class ConnectionManager:
             self.state_version += 1  # Increment version on state change
             # Include version in the outgoing message
             message["version"] = self.state_version
+            # Pack drawing message as binary:
+            points = message["points"]
+            header = struct.pack('!B I I f I', 1, self.state_version, int(message["color"].lstrip('#'), 16), float(message["width"]), len(points))
+            body = b''.join([struct.pack('!f f', p["x"], p["y"]) for p in points])
+            binary_message = header + body
         elif message.get("type") == "clear":
             self.drawing_state.clear()
             # Clear IP-based drawings too
@@ -113,6 +138,7 @@ class ConnectionManager:
             self.state_version += 1  # Increment version on state change
             # Include version in the outgoing message
             message["version"] = self.state_version
+            binary_message = struct.pack('!B I', 2, self.state_version)
 
         # Broadcast to all connections except the sender
         failed_connections = set()
@@ -124,11 +150,11 @@ class ConnectionManager:
                         if message.get("type") == "draw":
                             logger.debug(f"Broadcasting draw event to client type: {client_type} | Client: {connection.client.host}:{connection.client.port}")
                         
-                        await connection.send_json(message)
                         if message.get("type") in ["draw", "clear"]:
+                            await connection.send_bytes(binary_message)
                             self.client_versions[connection] = self.state_version
-                            # No longer forcing immediate state update after every draw/clear
-                            # This was causing redundant traffic and potential sync issues
+                        else:
+                            await connection.send_json(message)
                     except Exception as e:
                         logger.error(f"Failed to send to client: {e}")
                         failed_connections.add((connection, client_type))
@@ -240,23 +266,29 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
             await manager.broadcast({"type": "new-client"}, exclude=websocket)
 
         while True:
-            data = await websocket.receive_json()
+            data = await websocket.receive()
+            if "text" in data:
+                msg = json.loads(data["text"])
+            elif "bytes" in data:
+                msg = decode_draw_message(data["bytes"])
+            else:
+                continue
             # Update last ping time when we receive any message
             manager.last_ping_times[websocket] = asyncio.get_event_loop().time()
             
             # Handle ping/pong messages specially
-            if data.get("type") == "ping":
+            if msg.get("type") == "ping":
                 await websocket.send_json({
                     "type": "pong", 
-                    "timestamp": data.get("timestamp", asyncio.get_event_loop().time())
+                    "timestamp": msg.get("timestamp", asyncio.get_event_loop().time())
                 })
                 continue
-            elif data.get("type") == "pong":
+            elif msg.get("type") == "pong":
                 # Just update the ping time, which was already done above
                 continue
-            elif data.get("type") == "state_request":
+            elif msg.get("type") == "state_request":
                 # Handle specific request for complete state
-                client_version = data.get("current_version", 0)
+                client_version = msg.get("current_version", 0)
                 if client_version < manager.state_version:
                     await websocket.send_json({
                         "type": "state", 
@@ -265,9 +297,9 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                     })
                     manager.client_versions[websocket] = manager.state_version
                 continue
-            elif data.get("type") == "state_version_check":
+            elif msg.get("type") == "state_version_check":
                 # Check if client needs a state update based on version
-                client_version = data.get("current_version", 0)
+                client_version = msg.get("current_version", 0)
                 if client_version < manager.state_version:
                     logger.debug(f"Client version ({client_version}) behind server version ({manager.state_version}), sending update")
                     # Send state update to this client
@@ -281,11 +313,11 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                 
             # Relay other messages to all clients
             # For drawing data, include the client IP address
-            if data.get("type") == "draw":
+            if msg.get("type") == "draw":
                 client_ip = websocket.client.host
-                await manager.broadcast(data, exclude=websocket, client_ip=client_ip)
+                await manager.broadcast(msg, exclude=websocket, client_ip=client_ip)
             else:
-                await manager.broadcast(data, exclude=websocket)
+                await manager.broadcast(msg, exclude=websocket)
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected - Client Type: {client_type} | Address: {websocket.client.host}:{websocket.client.port}")
