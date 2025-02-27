@@ -1,36 +1,59 @@
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import Dict, Set, List
+from typing import Dict, Set, List, Optional, Any
 import asyncio
+import time
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger('WebSocket-Server')
+def setup_logger(name: str) -> logging.Logger:
+    """Configure and return a logger with the given name."""
+    logger = logging.getLogger(name)
+    
+    # Configure basic logging
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Add StreamHandler to ensure logging outputs to the terminal
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.DEBUG)
+    stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s'))
+    logger.addHandler(stream_handler)
+    
+    return logger
 
-# Add StreamHandler to ensure logging outputs to the terminal
-stream_handler = logging.StreamHandler()
-stream_handler.setLevel(logging.DEBUG)
-stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s'))
-logger.addHandler(stream_handler)
+# Initialize logger
+logger = setup_logger('WebSocket-Server')
 
 app = FastAPI()
 
 class ConnectionManager:
-    def __init__(self):
+    """Manages WebSocket connections, client state tracking and broadcasting."""
+    
+    def __init__(self) -> None:
+        """Initialize the connection manager with empty collections for tracking state."""
+        # Client connections organized by type
         self.active_connections: Dict[str, Set[WebSocket]] = {
             'draw': set(),
             'display': set()
         }
+        
+        # Drawing state tracking
         self.drawing_state: List[dict] = []
-        self.last_update_time = 0
-        self.state_version = 0  # Track state changes
+        self.last_update_time: float = time.time()
+        self.state_version: int = 0
+        
+        # IP-based drawing tracking
+        self.drawings_by_ip: Dict[str, List[dict]] = {}
+        
+        # Client state tracking
         self.client_versions: Dict[WebSocket, int] = {}
-        self.last_ping_times: Dict[WebSocket, float] = {}  # Track last ping time for each connection
-        self.heartbeat_task = None
+        self.last_ping_times: Dict[WebSocket, float] = {}
+        
+        # Background task reference
+        self.heartbeat_task: Optional[asyncio.Task] = None
+        
         logger.info("ConnectionManager initialized")
 
     async def connect(self, websocket: WebSocket, client_type: str):
@@ -65,9 +88,18 @@ class ConnectionManager:
             del self.last_ping_times[websocket]
         logger.debug(f"Updated active connections after disconnect - Draw: {len(self.active_connections['draw'])} | Display: {len(self.active_connections['display'])}")
 
-    async def broadcast(self, message: dict, exclude: WebSocket = None):
+    async def broadcast(self, message: dict, exclude: WebSocket = None, client_ip: str = None):
         # Update drawing state for draw events
         if message.get("type") == "draw":
+            # Add client IP to the message if provided
+            if client_ip:
+                message["client_ip"] = client_ip
+                
+                # Store drawing by IP
+                if client_ip not in self.drawings_by_ip:
+                    self.drawings_by_ip[client_ip] = []
+                self.drawings_by_ip[client_ip].append(message)
+                
             self.drawing_state.append(message)
             self.last_update_time = asyncio.get_event_loop().time()
             self.state_version += 1  # Increment version on state change
@@ -75,6 +107,8 @@ class ConnectionManager:
             message["version"] = self.state_version
         elif message.get("type") == "clear":
             self.drawing_state.clear()
+            # Clear IP-based drawings too
+            self.drawings_by_ip.clear()
             self.last_update_time = asyncio.get_event_loop().time()
             self.state_version += 1  # Increment version on state change
             # Include version in the outgoing message
@@ -86,9 +120,15 @@ class ConnectionManager:
             for connection in self.active_connections[client_type]:
                 if connection != exclude:
                     try:
+                        # Add more detailed logging for draw events
+                        if message.get("type") == "draw":
+                            logger.debug(f"Broadcasting draw event to client type: {client_type} | Client: {connection.client.host}:{connection.client.port}")
+                        
                         await connection.send_json(message)
                         if message.get("type") in ["draw", "clear"]:
                             self.client_versions[connection] = self.state_version
+                            # No longer forcing immediate state update after every draw/clear
+                            # This was causing redundant traffic and potential sync issues
                     except Exception as e:
                         logger.error(f"Failed to send to client: {e}")
                         failed_connections.add((connection, client_type))
@@ -225,9 +265,27 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                     })
                     manager.client_versions[websocket] = manager.state_version
                 continue
+            elif data.get("type") == "state_version_check":
+                # Check if client needs a state update based on version
+                client_version = data.get("current_version", 0)
+                if client_version < manager.state_version:
+                    logger.debug(f"Client version ({client_version}) behind server version ({manager.state_version}), sending update")
+                    # Send state update to this client
+                    await websocket.send_json({
+                        "type": "state", 
+                        "state": manager.drawing_state,
+                        "version": manager.state_version
+                    })
+                    manager.client_versions[websocket] = manager.state_version
+                continue
                 
             # Relay other messages to all clients
-            await manager.broadcast(data, exclude=websocket)
+            # For drawing data, include the client IP address
+            if data.get("type") == "draw":
+                client_ip = websocket.client.host
+                await manager.broadcast(data, exclude=websocket, client_ip=client_ip)
+            else:
+                await manager.broadcast(data, exclude=websocket)
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected - Client Type: {client_type} | Address: {websocket.client.host}:{websocket.client.port}")

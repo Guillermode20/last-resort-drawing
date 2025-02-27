@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drawing Interface with Zoom</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="status">Connecting...</div>
+    <div id="controls">
+        <div class="color-btn active" style="background: #ff0000" data-color="#ff0000"></div>
+        <div class="color-btn" style="background: #00ff00" data-color="#00ff00"></div>
+        <div class="color-btn" style="background: #0000ff" data-color="#0000ff"></div>
+        <div class="color-btn" style="background: #ffff00" data-color="#ffff00"></div>
+        <div class="color-btn" style="background: #ff00ff" data-color="#ff00ff"></div>
+        <div class="color-btn" style="background: #00ffff" data-color="#00ffff"></div>
+        <div class="color-btn" style="background: #ffffff" data-color="#ffffff"></div>
+        <input type="range" id="width-control" min="1" max="50" value="5">
+    </div>
+    <div id="zoom-controls">
+        <button id="zoom-in-btn">+</button>
+        <span id="zoom-value">90%</span>
+        <button id="zoom-out-btn">-</button>
+        <button id="reset-zoom-btn">Reset</button>
+    </div>
+
+    <!-- Load modules -->
+    <script src="js/config.js"></script>
+    <script src="js/canvas.js"></script>
+    <script src="js/drawing.js"></script>
+    <script src="js/networking.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

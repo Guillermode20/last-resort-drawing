@@ -57,7 +57,6 @@
     <div id="status">Connecting...</div>
     <div id="controls">
         <button onclick="clearCanvas()">Clear Canvas</button>
-        <button onclick="saveToLocalStorage()">Save State</button>
     </div>
 
     <script>
@@ -69,6 +68,7 @@
         let stateVersion = 0;
         let reconnectAttempts = 0;
         let heartbeatInterval;
+        let stateCheckInterval;
         let lastHeartbeat = 0;
 
         const VIRTUAL_WIDTH = 1920;  // Fixed virtual canvas width
@@ -83,7 +83,7 @@
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             updateScale();
-            loadFromLocalStorage();
+            // Removed local storage loading - we'll get state from server
         }
 
         function updateScale() {
@@ -119,12 +119,10 @@
                 ws.onopen = () => {
                     status.textContent = 'Connected to: ' + url;
                     reconnectAttempts = 0;
-                    // Announce presence to get current state
-                    ws.send(JSON.stringify({ 
-                        type: 'join', 
-                        client: 'display',
-                        current_version: stateVersion 
-                    }));
+                    
+                    // Always request current state from server when connecting
+                    // This ensures we're using server as the source of truth
+                    requestCurrentState();
                     
                     // Start heartbeat
                     startHeartbeat();
@@ -166,14 +164,7 @@
                             return;
                         }
                         
-                        if (data.type === 'new-client') {
-                            // Send complete state to new client
-                            ws.send(JSON.stringify({
-                                type: 'state',
-                                state: drawingState,
-                                version: stateVersion
-                            }));
-                        } else if (data.type === 'draw') {
+                        if (data.type === 'draw') {
                             // Update state version if provided
                             if (data.version && data.version > stateVersion) {
                                 stateVersion = data.version;
@@ -181,15 +172,12 @@
                             
                             drawLine(data.points, data.color, data.width);
                             drawingState.push(data);
-                            saveToLocalStorage();
                         } else if (data.type === 'state') {
-                            // Only update if the received state is newer
-                            if (data.version && data.version > stateVersion) {
-                                drawingState = data.state;
-                                stateVersion = data.version || 0;
-                                redrawCanvas();
-                                saveToLocalStorage();
-                            }
+                            // Server state is authoritative - always apply it
+                            drawingState = data.state;
+                            stateVersion = data.version || 0;
+                            redrawCanvas();
+                            console.log(`Received state from server: version ${stateVersion}, ${drawingState.length} elements`);
                         } else if (data.type === 'clear') {
                             // Update state version if provided
                             if (data.version && data.version > stateVersion) {
@@ -206,12 +194,29 @@
             attemptConnection(localWsUrl);
         }
         
+        function requestCurrentState() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                console.log("Requesting current state from server");
+                ws.send(JSON.stringify({ 
+                    type: 'state_request', 
+                    client: 'display',
+                    current_version: 0 // Always request full state by using version 0
+                }));
+            } else {
+                console.log("WebSocket not ready, will request state when connected");
+                // Will try again when connection is established
+            }
+        }
+        
         function startHeartbeat() {
             lastHeartbeat = Date.now();
             
-            // Clear any existing interval
+            // Clear any existing intervals
             if (heartbeatInterval) {
                 clearInterval(heartbeatInterval);
+            }
+            if (stateCheckInterval) {
+                clearInterval(stateCheckInterval);
             }
             
             // Send ping every 15 seconds
@@ -230,12 +235,26 @@
                     }
                 }
             }, 15000);
+            
+            // Check state version with server every second
+            stateCheckInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ 
+                        type: 'state_version_check', 
+                        current_version: stateVersion
+                    }));
+                }
+            }, 1000);
         }
         
         function stopHeartbeat() {
             if (heartbeatInterval) {
                 clearInterval(heartbeatInterval);
                 heartbeatInterval = null;
+            }
+            if (stateCheckInterval) {
+                clearInterval(stateCheckInterval);
+                stateCheckInterval = null;
             }
         }
 
@@ -272,33 +291,11 @@
                     version: stateVersion + 1 // Suggest next version
                 }));
             }
-            saveToLocalStorage();
+            // Removed local storage saving
         }
 
-        function saveToLocalStorage() {
-            try {
-                localStorage.setItem('drawingState', JSON.stringify(drawingState));
-                localStorage.setItem('stateVersion', stateVersion.toString());
-            } catch (e) {
-                console.error("Error saving to localStorage:", e);
-            }
-        }
-
-        function loadFromLocalStorage() {
-            try {
-                const saved = localStorage.getItem('drawingState');
-                const savedVersion = localStorage.getItem('stateVersion');
-                
-                if (saved) {
-                    drawingState = JSON.parse(saved);
-                    stateVersion = parseInt(savedVersion || '0', 10);
-                    redrawCanvas();
-                }
-            } catch (e) {
-                console.error("Error loading from localStorage:", e);
-            }
-        }
-
+        // Remove localStorage functions completely
+        
         window.onresize = () => {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
