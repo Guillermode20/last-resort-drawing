@@ -98,7 +98,6 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket, client_type: str):
         client_info = f"Client connecting - Type: {client_type} | Client Address: {websocket.client.host}:{websocket.client.port}"
         logger.info(client_info)
-        logger.debug(f"Current active connections before accept - Draw: {len(self.active_connections['draw'])} | Display: {len(self.active_connections['display'])}")
         
         await websocket.accept()
         self.active_connections[client_type].add(websocket)
@@ -106,12 +105,9 @@ class ConnectionManager:
         self.last_ping_times[websocket] = asyncio.get_event_loop().time()
         
         logger.info(f"Client successfully connected - {client_info}")
-        logger.debug(f"New connection details - Headers: {websocket.headers}")
-        logger.debug(f"Updated active connections - Draw: {len(self.active_connections['draw'])} | Display: {len(self.active_connections['display'])}")
         
         # Send current state to new client with version information
         state_size = len(self.drawing_state)
-        logger.debug(f"Sending initial state to new client - State size: {state_size} elements, Version: {self.state_version}")
         await websocket.send_json({
             "type": "state", 
             "state": self.drawing_state,
@@ -125,12 +121,10 @@ class ConnectionManager:
             del self.client_versions[websocket]
         if websocket in self.last_ping_times:
             del self.last_ping_times[websocket]
-        logger.debug(f"Updated active connections after disconnect - Draw: {len(self.active_connections['draw'])} | Display: {len(self.active_connections['display'])}")
 
     async def broadcast(self, message: dict, exclude: WebSocket = None, client_ip: str = None):
         # For logging
         msg_type = message.get("type", "unknown")
-        logger.debug(f"Broadcasting message type: {msg_type}")
         
         binary_message = None
         
@@ -144,7 +138,6 @@ class ConnectionManager:
                 if client_ip not in self.drawings_by_ip:
                     self.drawings_by_ip[client_ip] = []
                 self.drawings_by_ip[client_ip].append(message)
-                logger.debug(f"Stored drawing for IP {client_ip}, total: {len(self.drawings_by_ip[client_ip])}")
                 
             self.drawing_state.append(message)
             self.last_update_time = asyncio.get_event_loop().time()
@@ -298,8 +291,6 @@ async def test_endpoint():
 @app.websocket("/ws/{client_type}")
 async def websocket_endpoint(websocket: WebSocket, client_type: str):
     logger.info(f"New WebSocket connection request - Client Type: {client_type}")
-    logger.debug(f"Connection details - Client: {websocket.client.host}:{websocket.client.port}")
-    logger.debug(f"Headers: {websocket.headers}")
     
     if client_type not in ['draw', 'display']:
         logger.warning(f"Invalid client type attempted to connect: {client_type}")
@@ -317,19 +308,16 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
         while True:
             data = await websocket.receive()
             client_ip = websocket.client.host
-            logger.debug(f"Received message from {client_ip}: {data.keys() if hasattr(data, 'keys') else type(data)}")
             
             if "text" in data:
                 try:
                     msg = json.loads(data["text"])
-                    logger.debug(f"Parsed JSON message: {msg}")
                 except json.JSONDecodeError:
                     logger.error(f"Invalid JSON received: {data['text'][:100]}")
                     continue
             elif "bytes" in data:
                 try:
                     msg = decode_draw_message(data["bytes"])
-                    logger.debug(f"Decoded binary message: {msg}")
                 except Exception as e:
                     logger.error(f"Error decoding binary message: {e}")
                     continue
@@ -364,7 +352,6 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                 # Check if client needs a state update based on version
                 client_version = msg.get("current_version", 0)
                 if client_version < manager.state_version:
-                    logger.debug(f"Client version ({client_version}) behind server version ({manager.state_version}), sending update")
                     # Send state update to this client
                     await websocket.send_json({
                         "type": "state", 

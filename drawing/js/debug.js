@@ -2,8 +2,8 @@
  * Utility for debug logging
  */
 const Debug = (function () {
-    const ENABLED = true;
-    const LOG_LEVEL = 'debug'; // 'info', 'debug', 'warn', 'error', 'none'
+    const ENABLED = false;
+    const LOG_LEVEL = 'none'; // 'info', 'debug', 'warn', 'error', 'none'
 
     const LEVELS = {
         debug: 0,

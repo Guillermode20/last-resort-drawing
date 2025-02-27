@@ -13,6 +13,9 @@ const DrawingManager = (function () {
         // Don't start drawing if we're panning
         if (isPanning || (e.button === 1 || (e.button === 0 && e.altKey))) return;
 
+        // Mark activity for state check optimization
+        NetworkManager.markActivity();
+        
         isDrawing = true;
         currentPoints = [];
         const point = getPoint(e);
@@ -28,6 +31,11 @@ const DrawingManager = (function () {
     function draw(e) {
         if (!isDrawing || isPanning) return;
         e.preventDefault();
+
+        // Mark activity for state check optimization
+        if (currentPoints.length % 10 === 0) { // Only mark occasionally during continuous drawing
+            NetworkManager.markActivity();
+        }
 
         const point = getPoint(e);
         currentPoints.push(point);

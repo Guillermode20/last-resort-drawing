@@ -5,6 +5,8 @@ const NetworkManager = (function () {
     let stateCheckInterval;
     let lastHeartbeat = 0;
     const statusElement = document.getElementById('status');
+    let lastActivityTime = 0;
+    let isActiveMode = false;
 
     function connect() {
         const localWsUrl = Config.network.LOCAL_WS_URL;
@@ -244,18 +246,36 @@ const NetworkManager = (function () {
     }
 
     function startStateCheck() {
+        // Initialize as idle mode
+        isActiveMode = false;
+        updateStateCheckInterval();
+    }
+
+    function updateStateCheckInterval() {
         if (stateCheckInterval) {
             clearInterval(stateCheckInterval);
         }
-
+        
+        // Set interval based on activity state
+        const interval = isActiveMode ? 
+            Config.network.STATE_CHECK_INTERVAL_ACTIVE : 
+            Config.network.STATE_CHECK_INTERVAL_IDLE;
+            
         stateCheckInterval = setInterval(() => {
+            // Check if we should switch back to idle mode
+            if (isActiveMode && (Date.now() - lastActivityTime > Config.network.ACTIVITY_TIMEOUT)) {
+                isActiveMode = false;
+                updateStateCheckInterval();
+                return;
+            }
+            
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                     type: 'state_version_check',
                     current_version: DrawingManager.getStateVersion()
                 }));
             }
-        }, 1000);
+        }, interval);
     }
 
     function stopHeartbeat() {
@@ -290,6 +310,9 @@ const NetworkManager = (function () {
     function sendDrawing(drawData) {
         if (ws && ws.readyState === WebSocket.OPEN) {
             try {
+                // Mark activity occurred
+                markActivity();
+                
                 const numPoints = drawData.points.length;
                 const buffer = new ArrayBuffer(17 + numPoints * 8);
                 const view = new DataView(buffer);
@@ -314,6 +337,9 @@ const NetworkManager = (function () {
     function sendUndo() {
         if (ws && ws.readyState === WebSocket.OPEN) {
             try {
+                // Mark activity occurred
+                markActivity();
+                
                 console.log("Sending undo request to server");
 
                 // Send binary message for undo request only
@@ -331,11 +357,22 @@ const NetworkManager = (function () {
             console.error("WebSocket not ready for sending undo");
         }
     }
+    
+    function markActivity() {
+        lastActivityTime = Date.now();
+        
+        // If currently in idle mode, switch to active mode
+        if (!isActiveMode) {
+            isActiveMode = true;
+            updateStateCheckInterval();
+        }
+    }
 
     return {
         connect,
         requestCurrentState,
         sendDrawing,
-        sendUndo
+        sendUndo,
+        markActivity  // Expose function to mark activity
     };
 })();
