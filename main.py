@@ -32,20 +32,39 @@ app = FastAPI()
 
 def decode_draw_message(binary_data: bytes) -> dict:
     # Decode binary drawing message:
-    header_size = struct.calcsize('!B I I f I')  # type, version, color, width, num_points
-    msg_type, version, color_int, width, num_points = struct.unpack('!B I I f I', binary_data[:header_size])
+    header_size = struct.calcsize('!B I')  # type, version
+    if len(binary_data) < header_size:
+        logger.error(f"Binary message too short: {len(binary_data)} bytes")
+        return {}
+        
+    msg_type, version = struct.unpack('!B I', binary_data[:header_size])
+    
+    logger.debug(f"Decoded binary message: type={msg_type}, version={version}")
+    
     if msg_type == 1:
-        points = []
-        point_size = struct.calcsize('!f f')
-        offset = header_size
-        for _ in range(num_points):
-            x, y = struct.unpack('!f f', binary_data[offset:offset+point_size])
-            points.append({'x': x, 'y': y})
-            offset += point_size
-        color = f"#{color_int:06x}"
-        return {"type": "draw", "version": version, "color": color, "width": width, "points": points}
+        # Continue with draw message decoding
+        try:
+            color_width_size = struct.calcsize('!I f I')
+            color_int, width, num_points = struct.unpack('!I f I', binary_data[header_size:header_size+color_width_size])
+            points = []
+            point_size = struct.calcsize('!f f')
+            offset = header_size + color_width_size
+            for _ in range(num_points):
+                x, y = struct.unpack('!f f', binary_data[offset:offset+point_size])
+                points.append({'x': x, 'y': y})
+                offset += point_size
+            color = f"#{color_int:06x}"
+            return {"type": "draw", "version": version, "color": color, "width": width, "points": points}
+        except Exception as e:
+            logger.error(f"Error decoding draw message: {e}")
+            return {}
     elif msg_type == 2:
         return {"type": "clear", "version": version}
+    elif msg_type == 3:
+        logger.info(f"Received undo message with version {version}")
+        return {"type": "undo", "version": version}
+    else:
+        logger.warning(f"Unknown binary message type: {msg_type}")
     return {}
 
 class ConnectionManager:
@@ -109,6 +128,12 @@ class ConnectionManager:
         logger.debug(f"Updated active connections after disconnect - Draw: {len(self.active_connections['draw'])} | Display: {len(self.active_connections['display'])}")
 
     async def broadcast(self, message: dict, exclude: WebSocket = None, client_ip: str = None):
+        # For logging
+        msg_type = message.get("type", "unknown")
+        logger.debug(f"Broadcasting message type: {msg_type}")
+        
+        binary_message = None
+        
         # Update drawing state for draw events
         if message.get("type") == "draw":
             # Add client IP to the message if provided
@@ -119,6 +144,7 @@ class ConnectionManager:
                 if client_ip not in self.drawings_by_ip:
                     self.drawings_by_ip[client_ip] = []
                 self.drawings_by_ip[client_ip].append(message)
+                logger.debug(f"Stored drawing for IP {client_ip}, total: {len(self.drawings_by_ip[client_ip])}")
                 
             self.drawing_state.append(message)
             self.last_update_time = asyncio.get_event_loop().time()
@@ -130,6 +156,7 @@ class ConnectionManager:
             header = struct.pack('!B I I f I', 1, self.state_version, int(message["color"].lstrip('#'), 16), float(message["width"]), len(points))
             body = b''.join([struct.pack('!f f', p["x"], p["y"]) for p in points])
             binary_message = header + body
+            
         elif message.get("type") == "clear":
             self.drawing_state.clear()
             # Clear IP-based drawings too
@@ -139,6 +166,30 @@ class ConnectionManager:
             # Include version in the outgoing message
             message["version"] = self.state_version
             binary_message = struct.pack('!B I', 2, self.state_version)
+            
+        elif message.get("type") == "undo" and client_ip:
+            # Handle undo event for specific client IP
+            logger.info(f"Processing undo for IP {client_ip}")
+            
+            if client_ip in self.drawings_by_ip and self.drawings_by_ip[client_ip]:
+                # Remove the latest drawing from this IP
+                removed_drawing = self.drawings_by_ip[client_ip].pop()
+                
+                # Also remove it from global drawing state
+                if removed_drawing in self.drawing_state:
+                    self.drawing_state.remove(removed_drawing)
+                
+                self.last_update_time = asyncio.get_event_loop().time()
+                self.state_version += 1  # Increment version on state change
+                
+                # Include version in the outgoing message
+                message["version"] = self.state_version
+                binary_message = struct.pack('!B I', 3, self.state_version)
+                
+                logger.info(f"Undo operation from IP {client_ip}: removed 1 drawing. Remaining drawings for this IP: {len(self.drawings_by_ip[client_ip])}")
+            else:
+                logger.warning(f"Undo operation from IP {client_ip}: No drawings to undo")
+                return  # No drawings to undo, don't broadcast
 
         # Broadcast to all connections except the sender
         failed_connections = set()
@@ -146,11 +197,11 @@ class ConnectionManager:
             for connection in self.active_connections[client_type]:
                 if connection != exclude:
                     try:
-                        # Add more detailed logging for draw events
-                        if message.get("type") == "draw":
-                            logger.debug(f"Broadcasting draw event to client type: {client_type} | Client: {connection.client.host}:{connection.client.port}")
+                        # Special case logging for undo
+                        if message.get("type") == "undo":
+                            logger.debug(f"Broadcasting undo to {client_type} client: {connection.client.host}:{connection.client.port}")
                         
-                        if message.get("type") in ["draw", "clear"]:
+                        if message.get("type") in ["draw", "clear", "undo"] and binary_message:
                             await connection.send_bytes(binary_message)
                             self.client_versions[connection] = self.state_version
                         else:
@@ -192,18 +243,17 @@ class ConnectionManager:
             try:
                 await self.remove_dead_connections()  # Check for dead connections
                 await self.sync_client_states()  # Sync client states
-                await asyncio.sleep(2)  # Check every 2 seconds
+                await asyncio.sleep(1)  # Reduced interval for quicker sync
             except Exception as e:
                 logger.error(f"Error in periodic state check: {e}")
-                await asyncio.sleep(2)  # Continue the loop even if there's an error
-                
+                await asyncio.sleep(1)
+
     async def sync_client_states(self):
         """Ensure all clients have the current state version"""
         for client_type in self.active_connections:
             for connection in list(self.active_connections[client_type]):
-                # Only send updates to clients that are behind the current state
-                if (connection in self.client_versions and
-                    self.client_versions[connection] < self.state_version):
+                # Force full state update if client's version does not match the server's
+                if connection in self.client_versions and self.client_versions[connection] != self.state_version:
                     try:
                         await connection.send_json({
                             "type": "state", 
@@ -213,7 +263,6 @@ class ConnectionManager:
                         self.client_versions[connection] = self.state_version
                     except Exception as e:
                         logger.error(f"Failed to sync state with client: {e}")
-                        # We'll let the remove_dead_connections handle this in the next cycle
 
     async def start_heartbeat(self):
         """Start sending regular heartbeats to all clients"""
@@ -267,12 +316,26 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
 
         while True:
             data = await websocket.receive()
+            client_ip = websocket.client.host
+            logger.debug(f"Received message from {client_ip}: {data.keys() if hasattr(data, 'keys') else type(data)}")
+            
             if "text" in data:
-                msg = json.loads(data["text"])
+                try:
+                    msg = json.loads(data["text"])
+                    logger.debug(f"Parsed JSON message: {msg}")
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON received: {data['text'][:100]}")
+                    continue
             elif "bytes" in data:
-                msg = decode_draw_message(data["bytes"])
+                try:
+                    msg = decode_draw_message(data["bytes"])
+                    logger.debug(f"Decoded binary message: {msg}")
+                except Exception as e:
+                    logger.error(f"Error decoding binary message: {e}")
+                    continue
             else:
                 continue
+                
             # Update last ping time when we receive any message
             manager.last_ping_times[websocket] = asyncio.get_event_loop().time()
             
@@ -312,9 +375,9 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                 continue
                 
             # Relay other messages to all clients
-            # For drawing data, include the client IP address
-            if msg.get("type") == "draw":
-                client_ip = websocket.client.host
+            # For drawing data and undo, include the client IP address
+            if msg.get("type") in ["draw", "undo"]:
+                logger.info(f"Broadcasting {msg.get('type')} message from {client_ip}")
                 await manager.broadcast(msg, exclude=websocket, client_ip=client_ip)
             else:
                 await manager.broadcast(msg, exclude=websocket)

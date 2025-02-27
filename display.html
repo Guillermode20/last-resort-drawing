@@ -149,40 +149,77 @@
 
                 ws.onmessage = (event) => {
                     try {
-                        const data = JSON.parse(event.data);
-                        
-                        if (data.type === 'ping') {
-                            ws.send(JSON.stringify({ 
-                                type: 'pong', 
-                                timestamp: data.timestamp 
-                            }));
-                            return;
+                        // Handle binary message format
+                        if (event.data instanceof ArrayBuffer) {
+                            const view = new DataView(event.data);
+                            const msgType = view.getUint8(0);
+                            console.log("Received binary message type:", msgType);
+                            
+                            if (msgType === 1) { // Draw
+                                // Process draw binary message
+                                // ...existing code...
+                            } else if (msgType === 2) { // Clear
+                                const version = view.getUint32(1, false);
+                                if (version > stateVersion) {
+                                    stateVersion = version;
+                                    clearCanvas(false);
+                                }
+                            } else if (msgType === 3) { // Undo
+                                console.log("Received undo binary message");
+                                const version = view.getUint32(1, false);
+                                if (version > stateVersion) {
+                                    stateVersion = version;
+                                    // Request full state after an undo operation
+                                    requestCurrentState();
+                                }
+                                return;
+                            }
                         }
-                        
-                        if (data.type === 'heartbeat') {
-                            lastHeartbeat = Date.now();
-                            return;
-                        }
-                        
-                        if (data.type === 'draw') {
-                            // Update state version if provided
-                            if (data.version && data.version > stateVersion) {
-                                stateVersion = data.version;
+                    
+                        if (typeof event.data === "string") {
+                            const data = JSON.parse(event.data);
+                            console.log("Received message type:", data.type);
+                            
+                            if (data.type === 'ping') {
+                                ws.send(JSON.stringify({ 
+                                    type: 'pong', 
+                                    timestamp: data.timestamp 
+                                }));
+                                return;
                             }
                             
-                            drawLine(data.points, data.color, data.width);
-                            drawingState.push(data);
-                        } else if (data.type === 'state') {
-                            // Server state is authoritative - always apply it
-                            drawingState = data.state;
-                            stateVersion = data.version || 0;
-                            redrawCanvas();
-                            console.log(`Received state from server: version ${stateVersion}, ${drawingState.length} elements`);
-                        } else if (data.type === 'clear') {
-                            // Update state version if provided
-                            if (data.version && data.version > stateVersion) {
-                                stateVersion = data.version;
-                                clearCanvas(false);
+                            if (data.type === 'heartbeat') {
+                                lastHeartbeat = Date.now();
+                                return;
+                            }
+                            
+                            if (data.type === 'draw') {
+                                if (data.version && data.version > stateVersion) {
+                                    stateVersion = data.version;
+                                }
+                                drawLine(data.points, data.color, data.width);
+                                drawingState.push(data);
+                                // Request full state update if version gap is too wide
+                                if (data.version && (data.version - stateVersion > 1)) {
+                                    requestCurrentState();
+                                }
+                            } else if (data.type === 'state') {
+                                drawingState = data.state;
+                                stateVersion = data.version || 0;
+                                redrawCanvas();
+                                console.log(`Received state from server: version ${stateVersion}, ${drawingState.length} elements`);
+                            } else if (data.type === 'clear') {
+                                if (data.version && data.version > stateVersion) {
+                                    stateVersion = data.version;
+                                    clearCanvas(false);
+                                }
+                            } else if (data.type === 'undo') {
+                                console.log("Received undo JSON message with version:", data.version);
+                                if (data.version && data.version > stateVersion) {
+                                    stateVersion = data.version;
+                                    // Request full state after an undo operation
+                                    requestCurrentState();
+                                }
                             }
                         }
                     } catch (error) {

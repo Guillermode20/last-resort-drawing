@@ -7,6 +7,7 @@ const DrawingManager = (function () {
     let currentPoints = [];
     let drawingState = [];
     let stateVersion = 0;
+    let localDrawings = []; // Track local drawings for better undo UX
 
     function startDrawing(e) {
         // Don't start drawing if we're panning
@@ -94,6 +95,7 @@ const DrawingManager = (function () {
 
             NetworkManager.sendDrawing(drawData);
             drawingState.push(drawData);
+            localDrawings.push(drawData); // Track local drawing
             currentPoints = [];
         }
     }
@@ -184,6 +186,9 @@ const DrawingManager = (function () {
             console.log(`State updated to version ${stateVersion} with ${drawingState.length} elements`);
             // Redraw canvas with the new state
             redrawCanvasWithState();
+
+            // Reset local drawings as we've received an authoritative state
+            localDrawings = [];
         } else {
             console.warn("Received invalid state from server");
         }
@@ -239,6 +244,31 @@ const DrawingManager = (function () {
         }
     }
 
+    function undoLastDrawing() {
+        console.log("Undo triggered, local drawings:", localDrawings.length);
+
+        // Send undo request to server regardless of local state
+        // The server will check if there are drawings to undo for this IP
+        NetworkManager.sendUndo();
+
+        // For immediate visual feedback, we'll remove the last local stroke
+        // Note: This is just a visual effect, the real state will come from the server
+        if (localDrawings.length > 0) {
+            const lastDrawing = localDrawings.pop();
+
+            // Also remove from drawing state if it exists there
+            const index = drawingState.indexOf(lastDrawing);
+            if (index !== -1) {
+                drawingState.splice(index, 1);
+                redrawCanvasWithState();
+            }
+
+            console.log("Removed local drawing for visual feedback");
+        } else {
+            console.log("No local drawings to provide visual feedback for undo");
+        }
+    }
+
     // Public API
     return {
         startDrawing,
@@ -254,6 +284,7 @@ const DrawingManager = (function () {
         getStateVersion,
         setColor,
         setWidth,
-        processRemoteDrawing  // Add the new method to the public API
+        processRemoteDrawing,
+        undoLastDrawing // Add undo function to the public API
     };
 })();

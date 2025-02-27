@@ -72,22 +72,31 @@ const NetworkManager = (function () {
                         }
 
                         if (data.type === 'draw') {
-                            // Process drawing data from other clients
                             DrawingManager.processRemoteDrawing(data);
-                            // Update state version if the received version is newer
                             if (data.version && data.version > DrawingManager.getStateVersion()) {
                                 DrawingManager.updateStateVersion(data.version);
                             }
+                            // Request full state update if version gap is too wide
+                            if (data.version && (data.version - DrawingManager.getStateVersion() > 1)) {
+                                ws.send(JSON.stringify({
+                                    type: 'state_request',
+                                    client: 'draw',
+                                    current_version: 0
+                                }));
+                            }
                         } else if (data.type === 'clear') {
-                            // Always respect the server's state version
                             if (data.version && data.version > DrawingManager.getStateVersion()) {
                                 DrawingManager.updateStateVersion(data.version);
                                 DrawingManager.clearCanvas(false);
                             }
                         } else if (data.type === 'state') {
-                            // State from server is authoritative - always apply it and update our version
                             DrawingManager.updateDrawingState(data.state, data.version);
                             console.log(`Received state from server with version ${data.version}, state size: ${data.state.length}`);
+                        } else if (data.type === 'undo') {
+                            if (data.version && data.version > DrawingManager.getStateVersion()) {
+                                DrawingManager.updateStateVersion(data.version);
+                                DrawingManager.redrawCanvasWithState();
+                            }
                         }
                     } catch (error) {
                         console.error("Error processing message:", error);
@@ -99,10 +108,22 @@ const NetworkManager = (function () {
                         if (msg.version && msg.version > DrawingManager.getStateVersion()) {
                             DrawingManager.updateStateVersion(msg.version);
                         }
+                        if (msg.version && (msg.version - DrawingManager.getStateVersion() > 1)) {
+                            ws.send(JSON.stringify({
+                                type: 'state_request',
+                                client: 'draw',
+                                current_version: 0
+                            }));
+                        }
                     } else if (msg.type === 'clear') {
                         if (msg.version && msg.version > DrawingManager.getStateVersion()) {
                             DrawingManager.updateStateVersion(msg.version);
                             DrawingManager.clearCanvas(false);
+                        }
+                    } else if (msg.type === 'undo') {
+                        if (msg.version && msg.version > DrawingManager.getStateVersion()) {
+                            DrawingManager.updateStateVersion(msg.version);
+                            DrawingManager.redrawCanvasWithState();
                         }
                     }
                 }
@@ -117,6 +138,9 @@ const NetworkManager = (function () {
         let offset = 0;
         const msgType = view.getUint8(offset);
         offset += 1;
+
+        console.log("Received binary message type:", msgType);
+
         if (msgType === 1) {
             const version = view.getUint32(offset, false);
             offset += 4;
@@ -139,6 +163,10 @@ const NetworkManager = (function () {
         } else if (msgType === 2) {
             const version = view.getUint32(offset, false);
             return { type: 'clear', version };
+        } else if (msgType === 3) {
+            const version = view.getUint32(offset, false);
+            console.log("Decoded undo message with version:", version);
+            return { type: 'undo', version };
         }
         return {};
     }
@@ -161,20 +189,28 @@ const NetworkManager = (function () {
             }
 
             if (data.type === 'draw') {
-                // Process drawing data from other clients
                 DrawingManager.processRemoteDrawing(data);
-                // Update state version if the received version is newer
                 if (data.version && data.version > DrawingManager.getStateVersion()) {
                     DrawingManager.updateStateVersion(data.version);
                 }
+                if (data.version && (data.version - DrawingManager.getStateVersion() > 1)) {
+                    ws.send(JSON.stringify({
+                        type: 'state_request',
+                        client: 'draw',
+                        current_version: 0
+                    }));
+                }
             } else if (data.type === 'clear') {
-                // Always respect the server's state version
                 if (data.version && data.version > DrawingManager.getStateVersion()) {
                     DrawingManager.updateStateVersion(data.version);
                     DrawingManager.clearCanvas(false);
                 }
+            } else if (data.type === 'undo') {
+                if (data.version && data.version > DrawingManager.getStateVersion()) {
+                    DrawingManager.updateStateVersion(data.version);
+                    DrawingManager.redrawCanvasWithState();
+                }
             } else if (data.type === 'state') {
-                // State from server is authoritative - always apply it and update our version
                 DrawingManager.updateDrawingState(data.state, data.version);
                 console.log(`Received state from server with version ${data.version}, state size: ${data.state.length}`);
             }
@@ -186,12 +222,10 @@ const NetworkManager = (function () {
     function startHeartbeat() {
         lastHeartbeat = Date.now();
 
-        // Clear any existing interval
         if (heartbeatInterval) {
             clearInterval(heartbeatInterval);
         }
 
-        // Send ping every 15 seconds
         heartbeatInterval = setInterval(() => {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
@@ -199,35 +233,29 @@ const NetworkManager = (function () {
                     timestamp: Date.now()
                 }));
 
-                // Check if we've received a heartbeat in the last 45 seconds
                 if (Date.now() - lastHeartbeat > Config.network.HEARTBEAT_TIMEOUT) {
                     updateStatus("Connection lost - Reconnecting...");
                     ws.close();
-                    // Reconnection will be handled by onclose
                 }
             }
         }, Config.network.HEARTBEAT_INTERVAL);
 
-        // Start periodic state checking - more frequent checks
         startStateCheck();
     }
 
     function startStateCheck() {
-        // Clear any existing interval
         if (stateCheckInterval) {
             clearInterval(stateCheckInterval);
         }
 
-        // Check for state updates more frequently (every 1 second)
         stateCheckInterval = setInterval(() => {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                // Request current state version from server to verify we're in sync
                 ws.send(JSON.stringify({
                     type: 'state_version_check',
                     current_version: DrawingManager.getStateVersion()
                 }));
             }
-        }, 1000); // Check every second for better synchronization
+        }, 1000);
     }
 
     function stopHeartbeat() {
@@ -252,11 +280,10 @@ const NetworkManager = (function () {
             ws.send(JSON.stringify({
                 type: 'state_request',
                 client: 'draw',
-                current_version: 0 // Always request full state by using version 0
+                current_version: 0
             }));
         } else {
             console.log("WebSocket not ready, will request state when connected");
-            // Will try again when connection is established
         }
     }
 
@@ -284,10 +311,36 @@ const NetworkManager = (function () {
         }
     }
 
-    // Public API
+    function sendUndo() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            try {
+                console.log("Sending undo request to server");
+
+                // Send both binary and JSON format for maximum compatibility
+                // Binary message
+                const buffer = new ArrayBuffer(5); // 1 byte for type, 4 bytes for version
+                const view = new DataView(buffer);
+                view.setUint8(0, 3); // Type 3 = undo
+                view.setUint32(1, DrawingManager.getStateVersion() || 0, false);
+                ws.send(buffer);
+
+                // Also send as JSON for debugging and fallback
+                ws.send(JSON.stringify({
+                    type: 'undo',
+                    version: DrawingManager.getStateVersion() || 0
+                }));
+            } catch (error) {
+                console.error("Error sending undo data:", error);
+            }
+        } else {
+            console.error("WebSocket not ready for sending undo");
+        }
+    }
+
     return {
         connect,
         requestCurrentState,
-        sendDrawing
+        sendDrawing,
+        sendUndo
     };
 })();

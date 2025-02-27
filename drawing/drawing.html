@@ -18,6 +18,7 @@
         <div class="color-btn" style="background: #00ffff" data-color="#00ffff"></div>
         <div class="color-btn" style="background: #ffffff" data-color="#ffffff"></div>
         <input type="range" id="width-control" min="1" max="50" value="5">
+        <button id="undo-btn" title="Undo (Ctrl+Z)">Undo</button>
     </div>
     <div id="zoom-controls">
         <button id="zoom-in-btn">+</button>
@@ -27,11 +28,25 @@
     </div>
 
     <!-- Load modules -->
+    <script src="js/debug.js"></script>
     <script src="js/config.js"></script>
     <script src="js/canvas.js"></script>
     <script src="js/drawing.js"></script>
     <script src="js/networking.js"></script>
     <script src="js/ui.js"></script>
     <script src="js/app.js"></script>
+
+    <script>
+        // Debug event listeners after everything is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            // Log when undo is clicked
+            const undoBtn = document.getElementById('undo-btn');
+            if (undoBtn) {
+                undoBtn.addEventListener('click', function() {
+                    console.log('Undo button clicked directly');
+                });
+            }
+        });
+    </script>
 </body>
 </html>

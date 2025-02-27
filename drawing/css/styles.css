@@ -3,8 +3,9 @@ body {
     padding: 0;
     overflow: hidden;
     background: #000;
-    touch-action: none;
+    touch-action: none; /* Disable browser handling of all touch gestures */
 }
+
 #canvas {
     position: absolute;
     top: 50%;
@@ -15,44 +16,60 @@ body {
     background: transparent;
     border: none;
 }
+
 #controls {
     position: fixed;
+    bottom: 20px;
     left: 50%;
     transform: translateX(-50%);
     background: rgba(0, 0, 0, 0.5);
-    padding: 5px;
-    border-radius: 4px;
+    padding: 10px;
+    border-radius: 8px;
     display: flex;
-    gap: 5px;
-    flex-wrap: nowrap;
-    justify-content: center;
-    max-width: 90vw;
+    gap: 10px;
+    align-items: center;
     z-index: 1000;
 }
+
 .color-btn {
-    width: 25px;
-    height: 25px;
-    border: 2px solid #fff;
+    width: 30px;
+    height: 30px;
     border-radius: 50%;
     cursor: pointer;
+    border: 2px solid #555;
+    transition: transform 0.2s;
 }
+
+.color-btn:hover {
+    transform: scale(1.1);
+}
+
 .color-btn.active {
-    transform: scale(1.2);
+    border-color: white;
+    transform: scale(1.15);
+    box-shadow: 0 0 10px rgba(255,255,255,0.5);
 }
+
 #width-control {
     width: 100px;
     margin: 0 5px;
 }
+
 button {
-    padding: 5px 15px;
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
     border: none;
+    padding: 8px 12px;
     border-radius: 4px;
-    background: #fff;
+    font-size: 14px;
     cursor: pointer;
+    transition: background 0.2s;
 }
+
 button:hover {
-    background: #eee;
+    background: rgba(255, 255, 255, 0.3);
 }
+
 #status {
     position: fixed;
     top: 10px;
@@ -62,23 +79,40 @@ button:hover {
     color: #fff;
     border-radius: 4px;
     font-family: Arial, sans-serif;
-}
-#zoom-controls {
-    position: fixed;
-    top: 10px;
-    left: 10px;
-    background: rgba(0, 0, 0, 0.5);
-    padding: 5px;
-    border-radius: 4px;
-    display: flex;
-    gap: 5px;
     z-index: 1000;
 }
+
+#zoom-controls {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 10px;
+    border-radius: 8px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    z-index: 1000;
+}
+
 #zoom-value {
     color: white;
-    font-family: Arial, sans-serif;
-    margin: 0 5px;
-    min-width: 50px;
+    width: 50px;
     text-align: center;
-    line-height: 30px;
+}
+
+/* Specific styles for undo button */
+#undo-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 100, 100, 0.6);
+    color: white;
+    padding: 8px 16px;
+    font-weight: bold;
+    border: 2px solid white;
+}
+
+#undo-btn:hover {
+    background: rgba(255, 50, 50, 0.8);
 }
