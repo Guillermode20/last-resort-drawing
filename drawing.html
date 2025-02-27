@@ -124,6 +124,10 @@
         let currentWidth = 5;
         let currentPoints = [];
         let drawingState = []; // Store drawing state locally
+        let stateVersion = 0;
+        let reconnectAttempts = 0;
+        let heartbeatInterval;
+        let lastHeartbeat = 0;
 
         const VIRTUAL_WIDTH = 1920;  // Fixed virtual canvas width
         const VIRTUAL_HEIGHT = 1080; // Fixed virtual canvas height
@@ -291,39 +295,121 @@
             let wsUrl = null;
 
             function attemptConnection(url) {
+                if (ws) {
+                    try {
+                        ws.close();
+                    } catch (e) {
+                        console.error("Error closing existing connection:", e);
+                    }
+                }
+                
                 wsUrl = url;
                 ws = new WebSocket(url);
 
                 ws.onopen = () => {
                     status.textContent = 'Connected to: ' + url;
+                    reconnectAttempts = 0;
                     // Request current state when connecting
-                    ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
+                    ws.send(JSON.stringify({ 
+                        type: 'state_request', 
+                        client: 'draw',
+                        current_version: stateVersion 
+                    }));
+                    
+                    // Start heartbeat
+                    startHeartbeat();
                 };
 
-                ws.onclose = () => {
-                    status.textContent = 'Disconnected from: ' + url + ' - Trying other server...';
-                    if (wsUrl === localWsUrl) {
-                        attemptConnection(gcpWsUrl);
-                    } else {
-                        status.textContent = 'Failed to connect to both servers.';
-                    }
+                ws.onclose = (e) => {
+                    stopHeartbeat();
+                    status.textContent = `Disconnected from: ${url} (${e.code}) - Trying to reconnect...`;
+                    reconnectAttempts++;
+                    
+                    // Try the other server on the next attempt
+                    const nextUrl = wsUrl === localWsUrl ? gcpWsUrl : localWsUrl;
+                    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 30000); // Exponential backoff with max
+                    
+                    setTimeout(() => {
+                        attemptConnection(nextUrl);
+                    }, delay);
+                };
+
+                ws.onerror = (error) => {
+                    console.error("WebSocket error:", error);
+                    status.textContent = `Error on ${url} - Will try to reconnect`;
                 };
 
                 ws.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'clear') {
-                        clearCanvas(false);
-                        drawingState = []; // Clear local state
-                    } else if (data.type === 'state') {
-                        // Update local state
-                        drawingState = data.state.filter(item => item.type === 'draw');
-                        // Redraw with the new state
-                        redrawCanvasWithState();
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'ping') {
+                            ws.send(JSON.stringify({ 
+                                type: 'pong', 
+                                timestamp: data.timestamp 
+                            }));
+                            return;
+                        }
+                        
+                        if (data.type === 'heartbeat') {
+                            lastHeartbeat = Date.now();
+                            return;
+                        }
+                        
+                        if (data.type === 'clear') {
+                            // Update state version if provided
+                            if (data.version && data.version > stateVersion) {
+                                stateVersion = data.version;
+                                clearCanvas(false);
+                            }
+                        } else if (data.type === 'state') {
+                            // Only update if the received state is newer
+                            if (data.version && data.version > stateVersion) {
+                                drawingState = data.state.filter(item => item.type === 'draw');
+                                stateVersion = data.version || 0;
+                                redrawCanvasWithState();
+                            }
+                        }
+                    } catch (error) {
+                        console.error("Error processing message:", error);
                     }
                 };
             }
 
             attemptConnection(localWsUrl);
+        }
+        
+        function startHeartbeat() {
+            lastHeartbeat = Date.now();
+            
+            // Clear any existing interval
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+            }
+            
+            // Send ping every 15 seconds
+            heartbeatInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ 
+                        type: 'ping',
+                        timestamp: Date.now()
+                    }));
+                    
+                    // Check if we've received a heartbeat in the last 45 seconds
+                    if (Date.now() - lastHeartbeat > 45000) {
+                        status.textContent = "Connection lost - Reconnecting...";
+                        ws.close();
+                        // Reconnection will be handled by onclose
+                    }
+                }
+            }, 15000);
+        }
+        
+        function stopHeartbeat() {
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+                heartbeatInterval = null;
+            }
         }
 
         function startDrawing(e) {
@@ -394,7 +480,7 @@
             // Send points more frequently with smaller batches
             if (!batchTimeout) {
                 batchTimeout = setTimeout(() => {
-                    if (pendingPoints.length > 0) {
+                    if (pendingPoints.length > 0 && ws && ws.readyState === WebSocket.OPEN) {
                         const pointsToSend = pendingPoints.slice();
                         pendingPoints = [];
                         const drawData = {
@@ -404,11 +490,15 @@
                             width: currentWidth
                         };
                         
-                        // Send to server
-                        ws.send(JSON.stringify(drawData));
-                        
-                        // Add to local drawing state
-                        drawingState.push(drawData);
+                        try {
+                            // Send to server
+                            ws.send(JSON.stringify(drawData));
+                            
+                            // Add to local drawing state
+                            drawingState.push(drawData);
+                        } catch (error) {
+                            console.error("Error sending drawing data:", error);
+                        }
                     }
                     batchTimeout = null;
                 }, 1);
@@ -426,7 +516,7 @@
             }
         
             // Send any remaining points
-            if (pendingPoints.length > 0) {
+            if (pendingPoints.length > 0 && ws && ws.readyState === WebSocket.OPEN) {
                 const drawData = {
                     type: 'draw',
                     points: pendingPoints,
@@ -434,8 +524,12 @@
                     width: currentWidth
                 };
                 
-                ws.send(JSON.stringify(drawData));
-                drawingState.push(drawData);
+                try {
+                    ws.send(JSON.stringify(drawData));
+                    drawingState.push(drawData);
+                } catch (error) {
+                    console.error("Error sending final drawing data:", error);
+                }
                 pendingPoints = [];
             }
         }
@@ -469,8 +563,11 @@
         function clearCanvas(broadcast = true) {
             clearAndDrawBorder();
             drawingState = []; // Clear local state
-            if (broadcast) {
-                ws.send(JSON.stringify({ type: 'clear' }));
+            if (broadcast && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ 
+                    type: 'clear',
+                    version: stateVersion + 1 // Suggest next version
+                }));
             }
         }
 
@@ -480,8 +577,13 @@
                 connectWebSocket();
                 return;
             }
+            
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'join', client: 'draw' }));
+                ws.send(JSON.stringify({ 
+                    type: 'state_request', 
+                    client: 'draw',
+                    current_version: stateVersion
+                }));
             }
         }
 
