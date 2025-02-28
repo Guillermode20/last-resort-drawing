@@ -153,11 +153,45 @@
                         if (event.data instanceof ArrayBuffer) {
                             const view = new DataView(event.data);
                             const msgType = view.getUint8(0);
+                            let offset = 1;
                             console.log("Received binary message type:", msgType);
                             
                             if (msgType === 1) { // Draw
-                                // Process draw binary message
-                                // ...existing code...
+                                const version = view.getUint32(offset, false);
+                                offset += 4;
+                                const colorInt = view.getUint32(offset, false);
+                                offset += 4;
+                                const color = '#' + colorInt.toString(16).padStart(6, '0');
+                                const width = view.getFloat32(offset, false);
+                                offset += 4;
+                                const numPoints = view.getUint32(offset, false);
+                                offset += 4;
+                                const points = [];
+                                
+                                for (let i = 0; i < numPoints; i++) {
+                                    const x = view.getFloat32(offset, false);
+                                    offset += 4;
+                                    const y = view.getFloat32(offset, false);
+                                    offset += 4;
+                                    points.push({ x, y });
+                                }
+
+                                if (version > stateVersion) {
+                                    stateVersion = version;
+                                }
+                                drawLine(points, color, width);
+                                drawingState.push({
+                                    type: 'draw',
+                                    points,
+                                    color,
+                                    width,
+                                    version
+                                });
+
+                                // Request full state update if version gap is too wide
+                                if (version - stateVersion > 1) {
+                                    requestCurrentState();
+                                }
                             } else if (msgType === 2) { // Clear
                                 const version = view.getUint32(1, false);
                                 if (version > stateVersion) {
@@ -202,6 +236,23 @@
                                 // Request full state update if version gap is too wide
                                 if (data.version && (data.version - stateVersion > 1)) {
                                     requestCurrentState();
+                                }
+                            } else if (data.type === 'updates') {
+                                // New branch: process incremental updates from server
+                                if (data.actions && Array.isArray(data.actions)) {
+                                    data.actions.forEach(action => {
+                                        if (action.type === 'draw') {
+                                            drawLine(action.points, action.color, action.width);
+                                            drawingState.push(action);
+                                        } else if (action.type === 'clear') {
+                                            clearCanvas(false);
+                                        } else if (action.type === 'undo') {
+                                            requestCurrentState();
+                                        }
+                                    });
+                                    if (data.version) {
+                                        stateVersion = data.version;
+                                    }
                                 }
                             } else if (data.type === 'state') {
                                 drawingState = data.state;
