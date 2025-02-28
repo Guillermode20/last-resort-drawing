@@ -1,6 +1,6 @@
 import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import Dict, Set, List, Optional, Any
+from typing import Dict, Set, List, Optional, Any, Tuple
 import asyncio
 import time
 
@@ -73,6 +73,12 @@ class ConnectionManager:
         # Background task reference
         self.heartbeat_task: Optional[asyncio.Task] = None
 
+        # Compression settings
+        self.max_points_per_drawing = 1000
+        self.compression_threshold = 5000  # Total points across all drawings
+        self.last_compression_time = time.time()
+        self.compression_interval = 60  # seconds
+
     async def connect(self, websocket: WebSocket, client_type: str):
         await websocket.accept()
         self.active_connections[client_type].add(websocket)
@@ -94,6 +100,77 @@ class ConnectionManager:
         if websocket in self.last_ping_times:
             del self.last_ping_times[websocket]
 
+    def compress_drawing(self, drawing: dict) -> dict:
+        """Simplify a drawing by reducing the number of points while preserving shape"""
+        if drawing.get("type") != "draw" or "points" not in drawing:
+            return drawing
+            
+        points = drawing["points"]
+        if len(points) <= self.max_points_per_drawing:
+            return drawing
+            
+        # Douglas-Peucker algorithm simplified version
+        # Keep every nth point and important points (corners, endpoints)
+        compressed_points = []
+        step = len(points) // self.max_points_per_drawing + 1
+        
+        # Always keep first and last points
+        compressed_points.append(points[0])
+        
+        # Calculate point-to-line distances to identify important points
+        for i in range(1, len(points) - 1, step):
+            # Keep points with significant direction changes
+            if i > 1 and i < len(points) - 1:
+                p1 = points[i-1]
+                p2 = points[i]
+                p3 = points[i+1]
+                
+                # Calculate direction change
+                dx1 = p2["x"] - p1["x"]
+                dy1 = p2["y"] - p1["y"]
+                dx2 = p3["x"] - p2["x"]
+                dy2 = p3["y"] - p2["y"]
+                
+                # Significant direction change check
+                if (dx1 * dx2 + dy1 * dy2) / ((dx1**2 + dy1**2)**0.5 * (dx2**2 + dy2**2)**0.5) < 0.8:
+                    compressed_points.append(p2)
+                    continue
+            
+            # Otherwise keep every nth point
+            if i % step == 0:
+                compressed_points.append(points[i])
+        
+        # Always keep last point
+        if points[-1] != compressed_points[-1]:
+            compressed_points.append(points[-1])
+        
+        # Create a new drawing with compressed points
+        compressed_drawing = drawing.copy()
+        compressed_drawing["points"] = compressed_points
+        compressed_drawing["compressed"] = True
+        
+        return compressed_drawing
+    
+    def check_and_compress_state(self) -> bool:
+        """Check if state needs compression and compress if necessary"""
+        current_time = time.time()
+        
+        # Don't compress too frequently
+        if current_time - self.last_compression_time < self.compression_interval:
+            return False
+            
+        # Count total points in all drawings
+        total_points = sum(len(drawing.get("points", [])) 
+                          for drawing in self.drawing_state 
+                          if drawing.get("type") == "draw")
+        
+        if total_points > self.compression_threshold:
+            self.drawing_state = [self.compress_drawing(drawing) for drawing in self.drawing_state]
+            self.last_compression_time = current_time
+            return True
+        
+        return False
+
     async def broadcast(self, message: dict, exclude: WebSocket = None, client_ip: str = None):
         # For logging
         msg_type = message.get("type", "unknown")
@@ -111,6 +188,10 @@ class ConnectionManager:
                     self.drawings_by_ip[client_ip] = []
                 self.drawings_by_ip[client_ip].append(message)
                 
+            # Check if this drawing should be compressed first
+            if len(message.get("points", [])) > self.max_points_per_drawing:
+                message = self.compress_drawing(message)
+
             self.drawing_state.append(message)
             self.last_update_time = asyncio.get_event_loop().time()
             self.state_version += 1  # Increment version on state change
@@ -121,6 +202,9 @@ class ConnectionManager:
             header = struct.pack('!B I I f I', 1, self.state_version, int(message["color"].lstrip('#'), 16), float(message["width"]), len(points))
             body = b''.join([struct.pack('!f f', p["x"], p["y"]) for p in points])
             binary_message = header + body
+
+            # Periodically check if the entire state needs compression
+            self.check_and_compress_state()
             
         elif message.get("type") == "clear":
             self.drawing_state.clear()
@@ -198,22 +282,45 @@ class ConnectionManager:
             try:
                 await self.remove_dead_connections()  # Check for dead connections
                 await self.sync_client_states()  # Sync client states
+                
+                # Periodically compress state if needed
+                self.check_and_compress_state()
+                
                 await asyncio.sleep(1)  # Reduced interval for quicker sync
             except Exception as e:
                 await asyncio.sleep(1)
 
     async def sync_client_states(self):
-        """Ensure all clients have the current state version"""
+        """Ensure all clients have the current state version using differential updates when possible"""
         for client_type in self.active_connections:
             for connection in list(self.active_connections[client_type]):
-                # Force full state update if client's version does not match the server's
+                # Check if client's version does not match the server's
                 if connection in self.client_versions and self.client_versions[connection] != self.state_version:
                     try:
-                        await connection.send_json({
-                            "type": "state", 
-                            "state": self.drawing_state,
-                            "version": self.state_version
-                        })
+                        client_last_version = self.client_versions[connection]
+                        # Get missing actions since client's last version
+                        missing_actions = [action for action in self.drawing_state 
+                                         if action.get("version", 0) > client_last_version]
+                        
+                        # For large state updates, check if we should compress first
+                        if len(missing_actions) >= 10:
+                            missing_actions = [self.compress_drawing(action) for action in missing_actions]
+                            
+                        if len(missing_actions) < 10:  # Small diff, send just the missing actions
+                            await connection.send_json({
+                                "type": "updates", 
+                                "actions": missing_actions,
+                                "version": self.state_version
+                            })
+                        else:  # Too many differences, send full state
+                            # Ensure we're sending compressed state if it's large
+                            compressed_state = [self.compress_drawing(action) for action in self.drawing_state]
+                            await connection.send_json({
+                                "type": "state", 
+                                "state": compressed_state,
+                                "version": self.state_version
+                            })
+                        
                         self.client_versions[connection] = self.state_version
                     except Exception as e:
                         pass
@@ -251,13 +358,55 @@ async def test_endpoint():
 @app.get("/health")
 async def health_check():
     import psutil
+    import os
+    
+    # System metrics
+    disk = psutil.disk_usage(os.path.abspath(os.sep))
+    
+    # Connection metrics
+    draw_connections = len(manager.active_connections.get('draw', set()))
+    display_connections = len(manager.active_connections.get('display', set()))
+    total_connections = draw_connections + display_connections
+    
+    # Drawing metrics
+    total_drawings = len(manager.drawing_state)
+    total_points = sum(len(drawing.get("points", [])) for drawing in manager.drawing_state if drawing.get("type") == "draw")
+    drawings_per_client = {}
+    for ip, drawings in manager.drawings_by_ip.items():
+        drawings_per_client[ip] = len(drawings)
+    
+    # Version sync metrics
+    outdated_clients = sum(1 for client_version in manager.client_versions.values() 
+                          if client_version < manager.state_version)
+    
     return {
         "status": "healthy",
-        "memory_usage": psutil.virtual_memory().percent,
-        "cpu_usage": psutil.cpu_percent(interval=0.1),
-        "active_connections": sum(len(conns) for conns in manager.active_connections.values()),
-        "drawing_count": len(manager.drawing_state),
-        "uptime_seconds": time.time() - START_TIME  # Add START_TIME at app init
+        "system": {
+            "memory_usage_percent": psutil.virtual_memory().percent,
+            "cpu_usage_percent": psutil.cpu_percent(interval=0.1),
+            "disk_usage_percent": disk.percent,
+            "disk_free_gb": round(disk.free / (1024**3), 2)
+        },
+        "connections": {
+            "draw": draw_connections,
+            "display": display_connections,
+            "total": total_connections
+        },
+        "drawing_stats": {
+            "total_drawings": total_drawings,
+            "total_points": total_points,
+            "drawings_by_client": drawings_per_client,
+            "unique_clients": len(manager.drawings_by_ip),
+            "avg_drawings_per_client": total_drawings / max(1, len(manager.drawings_by_ip)) if manager.drawings_by_ip else 0,
+            "compression_active": total_points > manager.compression_threshold
+        },
+        "state": {
+            "version": manager.state_version,
+            "outdated_clients": outdated_clients,
+            "last_update_time": manager.last_update_time,
+            "seconds_since_update": asyncio.get_event_loop().time() - manager.last_update_time
+        },
+        "uptime_seconds": time.time() - START_TIME
     }
 
 @app.websocket("/ws/{client_type}")
@@ -307,23 +456,56 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                 # Handle specific request for complete state
                 client_version = msg.get("current_version", 0)
                 if client_version < manager.state_version:
-                    await websocket.send_json({
-                        "type": "state", 
-                        "state": manager.drawing_state,
-                        "version": manager.state_version
-                    })
+                    # Use differential updates when appropriate
+                    missing_actions = [action for action in manager.drawing_state 
+                                     if action.get("version", 0) > client_version]
+                    
+                    # For large state updates, check if we should compress first
+                    if len(missing_actions) >= 10:
+                        missing_actions = [manager.compress_drawing(action) for action in missing_actions]
+                    
+                    if len(missing_actions) < 10:  # Small diff, send just the missing actions
+                        await websocket.send_json({
+                            "type": "updates", 
+                            "actions": missing_actions,
+                            "version": manager.state_version
+                        })
+                    else:  # Too many differences, send full state
+                        # Send compressed state if it's large
+                        compressed_state = [manager.compress_drawing(action) for action in manager.drawing_state]
+                        await websocket.send_json({
+                            "type": "state", 
+                            "state": compressed_state,
+                            "version": manager.state_version
+                        })
                     manager.client_versions[websocket] = manager.state_version
                 continue
             elif msg.get("type") == "state_version_check":
                 # Check if client needs a state update based on version
                 client_version = msg.get("current_version", 0)
                 if client_version < manager.state_version:
-                    # Send state update to this client
-                    await websocket.send_json({
-                        "type": "state", 
-                        "state": manager.drawing_state,
-                        "version": manager.state_version
-                    })
+                    # Use differential updates when appropriate
+                    missing_actions = [action for action in manager.drawing_state 
+                                     if action.get("version", 0) > client_version]
+                    
+                    # For large state updates, check if we should compress first
+                    if len(missing_actions) >= 10:
+                        missing_actions = [manager.compress_drawing(action) for action in missing_actions]
+                    
+                    if len(missing_actions) < 10:  # Small diff, send just the missing actions
+                        await websocket.send_json({
+                            "type": "updates", 
+                            "actions": missing_actions,
+                            "version": manager.state_version
+                        })
+                    else:  # Too many differences, send full state
+                        # Send compressed state if it's large
+                        compressed_state = [manager.compress_drawing(action) for action in manager.drawing_state]
+                        await websocket.send_json({
+                            "type": "state", 
+                            "state": compressed_state,
+                            "version": manager.state_version
+                        })
                     manager.client_versions[websocket] = manager.state_version
                 continue
                 
