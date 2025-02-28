@@ -1,4 +1,5 @@
 import json
+import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict, Set, List, Optional, Any, Tuple
 import asyncio
@@ -7,9 +8,24 @@ import time
 START_TIME = time.time()
 import struct
 
-def setup_logger(name: str):
+def setup_logger(name: str) -> logging.Logger:
     """Configure and return a logger with the given name."""
-    return None
+    logger = logging.getLogger(name)
+    
+    # Configure basic logging
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Add StreamHandler to ensure logging outputs to the terminal
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.DEBUG)
+    stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s'))
+    logger.addHandler(stream_handler)
+    
+    return logger
 
 # Initialize logger
 logger = setup_logger('WebSocket-Server')
@@ -20,9 +36,12 @@ def decode_draw_message(binary_data: bytes) -> dict:
     # Decode binary drawing message:
     header_size = struct.calcsize('!B I')  # type, version
     if len(binary_data) < header_size:
+        logger.error(f"Binary message too short: {len(binary_data)} bytes")
         return {}
         
     msg_type, version = struct.unpack('!B I', binary_data[:header_size])
+    
+    logger.debug(f"Decoded binary message: type={msg_type}, version={version}")
     
     if msg_type == 1:
         # Continue with draw message decoding
@@ -39,13 +58,16 @@ def decode_draw_message(binary_data: bytes) -> dict:
             color = f"#{color_int:06x}"
             return {"type": "draw", "version": version, "color": color, "width": width, "points": points}
         except Exception as e:
+            logger.error(f"Error decoding draw message: {e}")
             return {}
     elif msg_type == 2:
         return {"type": "clear", "version": version}
     elif msg_type == 3:
+        logger.info(f"Received undo message with version {version}")
         return {"type": "undo", "version": version}
     else:
-        return {}
+        logger.warning(f"Unknown binary message type: {msg_type}")
+    return {}
 
 class ConnectionManager:
     """Manages WebSocket connections, client state tracking and broadcasting."""
@@ -72,6 +94,8 @@ class ConnectionManager:
         
         # Background task reference
         self.heartbeat_task: Optional[asyncio.Task] = None
+        
+        logger.info("ConnectionManager initialized")
 
         # Compression settings
         self.max_points_per_drawing = 1000
@@ -80,10 +104,15 @@ class ConnectionManager:
         self.compression_interval = 60  # seconds
 
     async def connect(self, websocket: WebSocket, client_type: str):
+        client_info = f"Client connecting - Type: {client_type} | Client Address: {websocket.client.host}:{websocket.client.port}"
+        logger.info(client_info)
+        
         await websocket.accept()
         self.active_connections[client_type].add(websocket)
         self.client_versions[websocket] = 0  # New client starts at version 0
         self.last_ping_times[websocket] = asyncio.get_event_loop().time()
+        
+        logger.info(f"Client successfully connected - {client_info}")
         
         # Send current state to new client with version information
         state_size = len(self.drawing_state)
@@ -94,6 +123,7 @@ class ConnectionManager:
         })
 
     def disconnect(self, websocket: WebSocket, client_type: str):
+        logger.info(f"Client disconnecting - Type: {client_type} | Client Address: {websocket.client.host}:{websocket.client.port}")
         self.active_connections[client_type].remove(websocket)
         if websocket in self.client_versions:
             del self.client_versions[websocket]
@@ -218,6 +248,8 @@ class ConnectionManager:
             
         elif message.get("type") == "undo" and client_ip:
             # Handle undo event for specific client IP
+            logger.info(f"Processing undo for IP {client_ip}")
+            
             if client_ip in self.drawings_by_ip and self.drawings_by_ip[client_ip]:
                 # Remove the latest drawing from this IP
                 removed_drawing = self.drawings_by_ip[client_ip].pop()
@@ -232,7 +264,10 @@ class ConnectionManager:
                 # Include version in the outgoing message
                 message["version"] = self.state_version
                 binary_message = struct.pack('!B I', 3, self.state_version)
+                
+                logger.info(f"Undo operation from IP {client_ip}: removed 1 drawing. Remaining drawings for this IP: {len(self.drawings_by_ip[client_ip])}")
             else:
+                logger.warning(f"Undo operation from IP {client_ip}: No drawings to undo")
                 return  # No drawings to undo, don't broadcast
 
         # Broadcast to all connections except the sender
@@ -241,12 +276,17 @@ class ConnectionManager:
             for connection in self.active_connections[client_type]:
                 if connection != exclude:
                     try:
+                        # Special case logging for undo
+                        if message.get("type") == "undo":
+                            logger.debug(f"Broadcasting undo to {client_type} client: {connection.client.host}:{connection.client.port}")
+                        
                         if message.get("type") in ["draw", "clear", "undo"] and binary_message:
                             await connection.send_bytes(binary_message)
                             self.client_versions[connection] = self.state_version
                         else:
                             await connection.send_json(message)
                     except Exception as e:
+                        logger.error(f"Failed to send to client: {e}")
                         failed_connections.add((connection, client_type))
         
         # Remove any connections that failed
@@ -288,6 +328,7 @@ class ConnectionManager:
                 
                 await asyncio.sleep(1)  # Reduced interval for quicker sync
             except Exception as e:
+                logger.error(f"Error in periodic state check: {e}")
                 await asyncio.sleep(1)
 
     async def sync_client_states(self):
@@ -323,7 +364,7 @@ class ConnectionManager:
                         
                         self.client_versions[connection] = self.state_version
                     except Exception as e:
-                        pass
+                        logger.error(f"Failed to sync state with client: {e}")
 
     async def start_heartbeat(self):
         """Start sending regular heartbeats to all clients"""
@@ -342,6 +383,7 @@ class ConnectionManager:
                             pass
                 await asyncio.sleep(10)  # Send heartbeat every 10 seconds
             except Exception as e:
+                logger.error(f"Error in heartbeat: {e}")
                 await asyncio.sleep(10)
 
 manager = ConnectionManager()
@@ -411,7 +453,10 @@ async def health_check():
 
 @app.websocket("/ws/{client_type}")
 async def websocket_endpoint(websocket: WebSocket, client_type: str):
+    logger.info(f"New WebSocket connection request - Client Type: {client_type}")
+    
     if client_type not in ['draw', 'display']:
+        logger.warning(f"Invalid client type attempted to connect: {client_type}")
         await websocket.close(code=1003)  # Unsupported data
         return
 
@@ -420,6 +465,7 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
     try:
         # If this is a new client, broadcast new-client event
         if client_type == 'draw':
+            logger.info(f"New drawing client connected - Broadcasting new-client event")
             await manager.broadcast({"type": "new-client"}, exclude=websocket)
 
         while True:
@@ -430,11 +476,13 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                 try:
                     msg = json.loads(data["text"])
                 except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON received: {data['text'][:100]}")
                     continue
             elif "bytes" in data:
                 try:
                     msg = decode_draw_message(data["bytes"])
                 except Exception as e:
+                    logger.error(f"Error decoding binary message: {e}")
                     continue
             else:
                 continue
@@ -512,13 +560,16 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
             # Relay other messages to all clients
             # For drawing data and undo, include the client IP address
             if msg.get("type") in ["draw", "undo"]:
+                logger.info(f"Broadcasting {msg.get('type')} message from {client_ip}")
                 await manager.broadcast(msg, exclude=websocket, client_ip=client_ip)
             else:
                 await manager.broadcast(msg, exclude=websocket)
 
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected - Client Type: {client_type} | Address: {websocket.client.host}:{websocket.client.port}")
         manager.disconnect(websocket, client_type)
     except Exception as e:
+        logger.error(f"Error handling WebSocket: {e}")
         manager.disconnect(websocket, client_type)
 
 if __name__ == "__main__":
