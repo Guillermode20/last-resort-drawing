@@ -97,7 +97,8 @@ const NetworkManager = (function () {
                         } else if (data.type === 'undo') {
                             if (data.version && data.version > DrawingManager.getStateVersion()) {
                                 DrawingManager.updateStateVersion(data.version);
-                                DrawingManager.redrawCanvasWithState();
+                                // Request full state after undo
+                                requestCurrentState();
                             }
                         }
                     } catch (error) {
@@ -125,7 +126,8 @@ const NetworkManager = (function () {
                     } else if (msg.type === 'undo') {
                         if (msg.version && msg.version > DrawingManager.getStateVersion()) {
                             DrawingManager.updateStateVersion(msg.version);
-                            DrawingManager.redrawCanvasWithState();
+                            // Request full state refresh after undo
+                            requestCurrentState();
                         }
                     }
                 }
@@ -165,10 +167,14 @@ const NetworkManager = (function () {
         } else if (msgType === 2) {
             const version = view.getUint32(offset, false);
             return { type: 'clear', version };
-        } else if (msgType === 3) {
-            const version = view.getUint32(offset, false);
+        } else if (msgType === 3) { // Undo
+            const version = view.getUint32(1, false);
             console.log("Decoded undo message with version:", version);
-            return { type: 'undo', version };
+            if (version > DrawingManager.getStateVersion()) {
+                DrawingManager.updateStateVersion(version);
+                // Request full state refresh after undo
+                requestCurrentState();
+            }
         }
         return {};
     }

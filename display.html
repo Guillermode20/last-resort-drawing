@@ -202,11 +202,11 @@
                                 console.log("Received undo binary message");
                                 const version = view.getUint32(1, false);
                                 if (version > stateVersion) {
+                                    console.log("Applying undo with version:", version);
                                     stateVersion = version;
-                                    // Request full state after an undo operation
+                                    // Request full state after undo
                                     requestCurrentState();
                                 }
-                                return;
                             }
                         }
                     

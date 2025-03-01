@@ -277,6 +277,10 @@ const DrawingManager = (function () {
         }
     }
 
+    function getDrawingState() {
+        return drawingState;
+    }
+
     // Public API
     return {
         startDrawing,
@@ -290,9 +294,10 @@ const DrawingManager = (function () {
         updateDrawingState,
         updateStateVersion,
         getStateVersion,
+        getDrawingState,  // Add new method
         setColor,
         setWidth,
         processRemoteDrawing,
-        undoLastDrawing // Add undo function to the public API
+        undoLastDrawing
     };
 })();

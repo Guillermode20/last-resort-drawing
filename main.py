@@ -264,6 +264,9 @@ class ConnectionManager:
                 # Include version in the outgoing message
                 message["version"] = self.state_version
                 binary_message = struct.pack('!B I', 3, self.state_version)
+
+                # Force state update for all clients after undo
+                await self.broadcast_state_update()
                 
                 logger.info(f"Undo operation from IP {client_ip}: removed 1 drawing. Remaining drawings for this IP: {len(self.drawings_by_ip[client_ip])}")
             else:
@@ -385,6 +388,29 @@ class ConnectionManager:
             except Exception as e:
                 logger.error(f"Error in heartbeat: {e}")
                 await asyncio.sleep(10)
+
+    async def broadcast_state_update(self):
+        """Send current state to all clients"""
+        compressed_state = [self.compress_drawing(action) for action in self.drawing_state]
+        state_message = {
+            "type": "state",
+            "state": compressed_state,
+            "version": self.state_version
+        }
+
+        failed_connections = set()
+        for client_type in self.active_connections:
+            for connection in self.active_connections[client_type]:
+                try:
+                    await connection.send_json(state_message)
+                    self.client_versions[connection] = self.state_version
+                except Exception as e:
+                    logger.error(f"Failed to send state update to client: {e}")
+                    failed_connections.add((connection, client_type))
+
+        # Remove any connections that failed
+        for connection, client_type in failed_connections:
+            self.disconnect(connection, client_type)
 
 manager = ConnectionManager()
 
