@@ -4,27 +4,29 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict, Set, List, Optional, Any, Tuple
 import asyncio
 import time
+import struct
+import math
 
 START_TIME = time.time()
-import struct
+
 
 def setup_logger(name: str) -> logging.Logger:
     """Configure and return a logger with the given name."""
     logger = logging.getLogger(name)
-    
+
     # Configure basic logging
     logging.basicConfig(
         level=logging.DEBUG,
         format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    
+
     # Add StreamHandler to ensure logging outputs to the terminal
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(logging.DEBUG)
     stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s'))
     logger.addHandler(stream_handler)
-    
+
     return logger
 
 # Initialize logger
@@ -38,11 +40,11 @@ def decode_draw_message(binary_data: bytes) -> dict:
     if len(binary_data) < header_size:
         logger.error(f"Binary message too short: {len(binary_data)} bytes")
         return {}
-        
+
     msg_type, version = struct.unpack('!B I', binary_data[:header_size])
-    
+
     logger.debug(f"Decoded binary message: type={msg_type}, version={version}")
-    
+
     if msg_type == 1:
         # Continue with draw message decoding
         try:
@@ -71,53 +73,61 @@ def decode_draw_message(binary_data: bytes) -> dict:
 
 class ConnectionManager:
     """Manages WebSocket connections, client state tracking and broadcasting."""
-    
-    def __init__(self) -> None:
-        """Initialize the connection manager with empty collections for tracking state."""
+
+    def __init__(self, max_points_per_drawing: int = 100, max_drawings: int = 1000) -> None:
+        """Initialize the connection manager with empty collections for tracking state.
+        
+        Args:
+            max_points_per_drawing (int): Maximum number of points to keep per drawing after compression.
+                Higher values preserve more detail but use more memory/bandwidth. Default: 100
+            max_drawings (int): Maximum number of drawings to keep in memory. When exceeded,
+                older drawings will be pruned while preserving the most recent ones. Default: 1000
+        """
         # Client connections organized by type
         self.active_connections: Dict[str, Set[WebSocket]] = {
             'draw': set(),
             'display': set()
         }
-        
-        # Drawing state tracking
+
+        # Drawing state tracking with memory management
         self.drawing_state: List[dict] = []
+        self.max_drawings = max_drawings
         self.last_update_time: float = time.time()
         self.state_version: int = 0
-        
-        # IP-based drawing tracking
+
+        # IP-based drawing tracking with memory management
         self.drawings_by_ip: Dict[str, List[dict]] = {}
-        
+        self.ip_drawing_counts: Dict[str, int] = {}
+
         # Client state tracking
         self.client_versions: Dict[WebSocket, int] = {}
         self.last_ping_times: Dict[WebSocket, float] = {}
-        
+
         # Background task reference
         self.heartbeat_task: Optional[asyncio.Task] = None
-        
+
         logger.info("ConnectionManager initialized")
 
         # Compression settings
-        self.max_points_per_drawing = 1000
-        self.compression_threshold = 5000  # Total points across all drawings
-        self.last_compression_time = time.time()
-        self.compression_interval = 60  # seconds
+        self.max_points_per_drawing = max_points_per_drawing
+        logger.info(f"Drawing compression configured to keep {max_points_per_drawing} points per drawing")
+
 
     async def connect(self, websocket: WebSocket, client_type: str):
         client_info = f"Client connecting - Type: {client_type} | Client Address: {websocket.client.host}:{websocket.client.port}"
         logger.info(client_info)
-        
+
         await websocket.accept()
         self.active_connections[client_type].add(websocket)
         self.client_versions[websocket] = 0  # New client starts at version 0
         self.last_ping_times[websocket] = asyncio.get_event_loop().time()
-        
+
         logger.info(f"Client successfully connected - {client_info}")
-        
+
         # Send current state to new client with version information
         state_size = len(self.drawing_state)
         await websocket.send_json({
-            "type": "state", 
+            "type": "state",
             "state": self.drawing_state,
             "version": self.state_version
         })
@@ -130,99 +140,82 @@ class ConnectionManager:
         if websocket in self.last_ping_times:
             del self.last_ping_times[websocket]
 
-    def compress_drawing(self, drawing: dict) -> dict:
-        """Simplify a drawing by reducing the number of points while preserving shape"""
-        if drawing.get("type") != "draw" or "points" not in drawing:
-            return drawing
-            
-        points = drawing["points"]
-        if len(points) <= self.max_points_per_drawing:
-            return drawing
-            
-        # Douglas-Peucker algorithm simplified version
-        # Keep every nth point and important points (corners, endpoints)
-        compressed_points = []
-        step = len(points) // self.max_points_per_drawing + 1
-        
-        # Always keep first and last points
-        compressed_points.append(points[0])
-        
-        # Calculate point-to-line distances to identify important points
-        for i in range(1, len(points) - 1, step):
-            # Keep points with significant direction changes
-            if i > 1 and i < len(points) - 1:
-                p1 = points[i-1]
-                p2 = points[i]
-                p3 = points[i+1]
-                
-                # Calculate direction change
-                dx1 = p2["x"] - p1["x"]
-                dy1 = p2["y"] - p1["y"]
-                dx2 = p3["x"] - p2["x"]
-                dy2 = p3["y"] - p2["y"]
-                
-                # Significant direction change check
-                if (dx1 * dx2 + dy1 * dy2) / ((dx1**2 + dy1**2)**0.5 * (dx2**2 + dy2**2)**0.5) < 0.8:
-                    compressed_points.append(p2)
-                    continue
-            
-            # Otherwise keep every nth point
-            if i % step == 0:
-                compressed_points.append(points[i])
-        
-        # Always keep last point
-        if points[-1] != compressed_points[-1]:
-            compressed_points.append(points[-1])
-        
-        # Create a new drawing with compressed points
-        compressed_drawing = drawing.copy()
-        compressed_drawing["points"] = compressed_points
-        compressed_drawing["compressed"] = True
-        
-        return compressed_drawing
-    
-    def check_and_compress_state(self) -> bool:
-        """Check if state needs compression and compress if necessary"""
-        current_time = time.time()
-        
-        # Don't compress too frequently
-        if current_time - self.last_compression_time < self.compression_interval:
-            return False
-            
-        # Count total points in all drawings
-        total_points = sum(len(drawing.get("points", [])) 
-                          for drawing in self.drawing_state 
-                          if drawing.get("type") == "draw")
-        
-        if total_points > self.compression_threshold:
-            self.drawing_state = [self.compress_drawing(drawing) for drawing in self.drawing_state]
-            self.last_compression_time = current_time
-            return True
-        
-        return False
+
+    def triangle_area(self, p1: Dict[str, float], p2: Dict[str, float], p3: Dict[str, float]) -> float:
+        """Calculate the area of a triangle formed by three points."""
+        return 0.5 * abs(p1['x'] * (p2['y'] - p3['y']) + p2['x'] * (p3['y'] - p1['y']) + p3['x'] * (p1['y'] - p2['y']))
+
+    def visvalingam_whyatt(self, points: List[Dict[str, float]], num_to_keep: int) -> List[Dict[str, float]]:
+        """Simplify a list of points using the Visvalingam-Whyatt algorithm."""
+
+        if len(points) <= num_to_keep:
+            return points
+
+        # Calculate areas for each point (except first and last)
+        areas = [0.0]  # First point has no area
+        for i in range(1, len(points) - 1):
+            areas.append(self.triangle_area(points[i-1], points[i], points[i+1]))
+        areas.append(0.0)  # Last point has no area
+
+        # Iteratively remove points with smallest area until we have the desired number
+        while len(points) > num_to_keep:
+            # Find the index of the point with the smallest area (excluding endpoints)
+            min_area_index = min(range(1, len(points) - 1), key=lambda i: areas[i])
+
+            # Remove the point and update areas of neighboring points
+            del points[min_area_index]
+            del areas[min_area_index]
+
+            # Update area of the previous point (if it's not the first point)
+            if min_area_index > 1:
+                areas[min_area_index - 1] = self.triangle_area(points[min_area_index - 2], points[min_area_index - 1], points[min_area_index])
+
+            # Update area of the next point (if it's not the last point)
+            if min_area_index < len(points) - 1:
+                areas[min_area_index] = self.triangle_area(points[min_area_index - 1], points[min_area_index], points[min_area_index + 1])
+
+        return points
+
+    def manage_drawing_state(self):
+        """Manage drawing state to prevent memory overflow"""
+        if len(self.drawing_state) > self.max_drawings:
+            # Keep the most recent drawings
+            excess = len(self.drawing_state) - self.max_drawings
+            removed_drawings = self.drawing_state[:excess]
+            self.drawing_state = self.drawing_state[excess:]
+
+            # Update IP-based tracking for removed drawings
+            for drawing in removed_drawings:
+                client_ip = drawing.get('client_ip')
+                if client_ip and client_ip in self.drawings_by_ip:
+                    if drawing in self.drawings_by_ip[client_ip]:
+                        self.drawings_by_ip[client_ip].remove(drawing)
+                        self.ip_drawing_counts[client_ip] = len(self.drawings_by_ip[client_ip])
+
+            logger.info(f"Pruned {excess} old drawings to maintain memory limits")
 
     async def broadcast(self, message: dict, exclude: WebSocket = None, client_ip: str = None):
         # For logging
         msg_type = message.get("type", "unknown")
-        
+
         binary_message = None
-        
+
         # Update drawing state for draw events
         if message.get("type") == "draw":
             # Add client IP to the message if provided
             if client_ip:
                 message["client_ip"] = client_ip
-                
-                # Store drawing by IP
+
+                # Store drawing by IP with memory management
                 if client_ip not in self.drawings_by_ip:
                     self.drawings_by_ip[client_ip] = []
+                    self.ip_drawing_counts[client_ip] = 0
+
                 self.drawings_by_ip[client_ip].append(message)
-                
-            # Check if this drawing should be compressed first
-            if len(message.get("points", [])) > self.max_points_per_drawing:
-                message = self.compress_drawing(message)
+                self.ip_drawing_counts[client_ip] = len(self.drawings_by_ip[client_ip])
 
             self.drawing_state.append(message)
+            self.manage_drawing_state()  # Manage memory usage
             self.last_update_time = asyncio.get_event_loop().time()
             self.state_version += 1  # Increment version on state change
             # Include version in the outgoing message
@@ -233,9 +226,6 @@ class ConnectionManager:
             body = b''.join([struct.pack('!f f', p["x"], p["y"]) for p in points])
             binary_message = header + body
 
-            # Periodically check if the entire state needs compression
-            self.check_and_compress_state()
-            
         elif message.get("type") == "clear":
             self.drawing_state.clear()
             # Clear IP-based drawings too
@@ -245,29 +235,29 @@ class ConnectionManager:
             # Include version in the outgoing message
             message["version"] = self.state_version
             binary_message = struct.pack('!B I', 2, self.state_version)
-            
+
         elif message.get("type") == "undo" and client_ip:
             # Handle undo event for specific client IP
             logger.info(f"Processing undo for IP {client_ip}")
-            
+
             if client_ip in self.drawings_by_ip and self.drawings_by_ip[client_ip]:
                 # Remove the latest drawing from this IP
                 removed_drawing = self.drawings_by_ip[client_ip].pop()
-                
+
                 # Also remove it from global drawing state
                 if removed_drawing in self.drawing_state:
                     self.drawing_state.remove(removed_drawing)
-                
+
                 self.last_update_time = asyncio.get_event_loop().time()
                 self.state_version += 1  # Increment version on state change
-                
+
                 # Include version in the outgoing message
                 message["version"] = self.state_version
                 binary_message = struct.pack('!B I', 3, self.state_version)
 
                 # Force state update for all clients after undo
                 await self.broadcast_state_update()
-                
+
                 logger.info(f"Undo operation from IP {client_ip}: removed 1 drawing. Remaining drawings for this IP: {len(self.drawings_by_ip[client_ip])}")
             else:
                 logger.warning(f"Undo operation from IP {client_ip}: No drawings to undo")
@@ -282,7 +272,7 @@ class ConnectionManager:
                         # Special case logging for undo
                         if message.get("type") == "undo":
                             logger.debug(f"Broadcasting undo to {client_type} client: {connection.client.host}:{connection.client.port}")
-                        
+
                         if message.get("type") in ["draw", "clear", "undo"] and binary_message:
                             await connection.send_bytes(binary_message)
                             self.client_versions[connection] = self.state_version
@@ -291,7 +281,7 @@ class ConnectionManager:
                     except Exception as e:
                         logger.error(f"Failed to send to client: {e}")
                         failed_connections.add((connection, client_type))
-        
+
         # Remove any connections that failed
         for connection, client_type in failed_connections:
             self.disconnect(connection, client_type)
@@ -306,7 +296,7 @@ class ConnectionManager:
     async def remove_dead_connections(self):
         current_time = asyncio.get_event_loop().time()
         failed_connections = set()
-        
+
         for client_type in list(self.active_connections.keys()):
             for connection in list(self.active_connections[client_type]):
                 # Check if connection hasn't responded in 30 seconds
@@ -316,7 +306,7 @@ class ConnectionManager:
                             failed_connections.add((connection, client_type))
                     except Exception:
                         failed_connections.add((connection, client_type))
-                        
+
         for connection, client_type in failed_connections:
             self.disconnect(connection, client_type)
 
@@ -325,10 +315,7 @@ class ConnectionManager:
             try:
                 await self.remove_dead_connections()  # Check for dead connections
                 await self.sync_client_states()  # Sync client states
-                
-                # Periodically compress state if needed
-                self.check_and_compress_state()
-                
+
                 await asyncio.sleep(1)  # Reduced interval for quicker sync
             except Exception as e:
                 logger.error(f"Error in periodic state check: {e}")
@@ -343,28 +330,22 @@ class ConnectionManager:
                     try:
                         client_last_version = self.client_versions[connection]
                         # Get missing actions since client's last version
-                        missing_actions = [action for action in self.drawing_state 
+                        missing_actions = [action for action in self.drawing_state
                                          if action.get("version", 0) > client_last_version]
-                        
-                        # For large state updates, check if we should compress first
-                        if len(missing_actions) >= 10:
-                            missing_actions = [self.compress_drawing(action) for action in missing_actions]
-                            
+
                         if len(missing_actions) < 10:  # Small diff, send just the missing actions
                             await connection.send_json({
-                                "type": "updates", 
+                                "type": "updates",
                                 "actions": missing_actions,
                                 "version": self.state_version
                             })
                         else:  # Too many differences, send full state
-                            # Ensure we're sending compressed state if it's large
-                            compressed_state = [self.compress_drawing(action) for action in self.drawing_state]
                             await connection.send_json({
-                                "type": "state", 
-                                "state": compressed_state,
+                                "type": "state",
+                                "state": self.drawing_state,
                                 "version": self.state_version
                             })
-                        
+
                         self.client_versions[connection] = self.state_version
                     except Exception as e:
                         logger.error(f"Failed to sync state with client: {e}")
@@ -378,7 +359,7 @@ class ConnectionManager:
                     for connection in list(self.active_connections[client_type]):
                         try:
                             await connection.send_json({
-                                "type": "heartbeat", 
+                                "type": "heartbeat",
                                 "timestamp": current_time
                             })
                         except:
@@ -391,10 +372,9 @@ class ConnectionManager:
 
     async def broadcast_state_update(self):
         """Send current state to all clients"""
-        compressed_state = [self.compress_drawing(action) for action in self.drawing_state]
         state_message = {
             "type": "state",
-            "state": compressed_state,
+            "state": self.drawing_state,
             "version": self.state_version
         }
 
@@ -427,26 +407,26 @@ async def test_endpoint():
 async def health_check():
     import psutil
     import os
-    
+
     # System metrics
     disk = psutil.disk_usage(os.path.abspath(os.sep))
-    
+
     # Connection metrics
     draw_connections = len(manager.active_connections.get('draw', set()))
     display_connections = len(manager.active_connections.get('display', set()))
     total_connections = draw_connections + display_connections
-    
+
     # Drawing metrics
     total_drawings = len(manager.drawing_state)
     total_points = sum(len(drawing.get("points", [])) for drawing in manager.drawing_state if drawing.get("type") == "draw")
     drawings_per_client = {}
     for ip, drawings in manager.drawings_by_ip.items():
         drawings_per_client[ip] = len(drawings)
-    
+
     # Version sync metrics
-    outdated_clients = sum(1 for client_version in manager.client_versions.values() 
+    outdated_clients = sum(1 for client_version in manager.client_versions.values()
                           if client_version < manager.state_version)
-    
+
     return {
         "status": "healthy",
         "system": {
@@ -465,8 +445,7 @@ async def health_check():
             "total_points": total_points,
             "drawings_by_client": drawings_per_client,
             "unique_clients": len(manager.drawings_by_ip),
-            "avg_drawings_per_client": total_drawings / max(1, len(manager.drawings_by_ip)) if manager.drawings_by_ip else 0,
-            "compression_active": total_points > manager.compression_threshold
+            "avg_drawings_per_client": total_drawings / max(1, len(manager.drawings_by_ip)) if manager.drawings_by_ip else 0
         },
         "state": {
             "version": manager.state_version,
@@ -480,7 +459,7 @@ async def health_check():
 @app.websocket("/ws/{client_type}")
 async def websocket_endpoint(websocket: WebSocket, client_type: str):
     logger.info(f"New WebSocket connection request - Client Type: {client_type}")
-    
+
     if client_type not in ['draw', 'display']:
         logger.warning(f"Invalid client type attempted to connect: {client_type}")
         await websocket.close(code=1003)  # Unsupported data
@@ -497,7 +476,7 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
         while True:
             data = await websocket.receive()
             client_ip = websocket.client.host
-            
+
             if "text" in data:
                 try:
                     msg = json.loads(data["text"])
@@ -512,14 +491,14 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                     continue
             else:
                 continue
-                
+
             # Update last ping time when we receive any message
             manager.last_ping_times[websocket] = asyncio.get_event_loop().time()
-            
+
             # Handle ping/pong messages specially
             if msg.get("type") == "ping":
                 await websocket.send_json({
-                    "type": "pong", 
+                    "type": "pong",
                     "timestamp": msg.get("timestamp", asyncio.get_event_loop().time())
                 })
                 continue
@@ -531,25 +510,19 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                 client_version = msg.get("current_version", 0)
                 if client_version < manager.state_version:
                     # Use differential updates when appropriate
-                    missing_actions = [action for action in manager.drawing_state 
+                    missing_actions = [action for action in manager.drawing_state
                                      if action.get("version", 0) > client_version]
-                    
-                    # For large state updates, check if we should compress first
-                    if len(missing_actions) >= 10:
-                        missing_actions = [manager.compress_drawing(action) for action in missing_actions]
-                    
+
                     if len(missing_actions) < 10:  # Small diff, send just the missing actions
                         await websocket.send_json({
-                            "type": "updates", 
+                            "type": "updates",
                             "actions": missing_actions,
                             "version": manager.state_version
                         })
                     else:  # Too many differences, send full state
-                        # Send compressed state if it's large
-                        compressed_state = [manager.compress_drawing(action) for action in manager.drawing_state]
                         await websocket.send_json({
-                            "type": "state", 
-                            "state": compressed_state,
+                            "type": "state",
+                            "state": manager.drawing_state,
                             "version": manager.state_version
                         })
                     manager.client_versions[websocket] = manager.state_version
@@ -559,30 +532,24 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                 client_version = msg.get("current_version", 0)
                 if client_version < manager.state_version:
                     # Use differential updates when appropriate
-                    missing_actions = [action for action in manager.drawing_state 
+                    missing_actions = [action for action in manager.drawing_state
                                      if action.get("version", 0) > client_version]
-                    
-                    # For large state updates, check if we should compress first
-                    if len(missing_actions) >= 10:
-                        missing_actions = [manager.compress_drawing(action) for action in missing_actions]
-                    
+
                     if len(missing_actions) < 10:  # Small diff, send just the missing actions
                         await websocket.send_json({
-                            "type": "updates", 
+                            "type": "updates",
                             "actions": missing_actions,
                             "version": manager.state_version
                         })
                     else:  # Too many differences, send full state
-                        # Send compressed state if it's large
-                        compressed_state = [manager.compress_drawing(action) for action in manager.drawing_state]
                         await websocket.send_json({
-                            "type": "state", 
-                            "state": compressed_state,
+                            "type": "state",
+                            "state": manager.drawing_state,
                             "version": manager.state_version
                         })
                     manager.client_versions[websocket] = manager.state_version
                 continue
-                
+
             # Relay other messages to all clients
             # For drawing data and undo, include the client IP address
             if msg.get("type") in ["draw", "undo"]:
