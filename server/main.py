@@ -216,7 +216,7 @@ class ConnectionManager:
 
             self.drawing_state.append(message)
             self.manage_drawing_state()  # Manage memory usage
-            self.last_update_time = asyncio.get_event_loop().time()
+            self.last_update_time = time.time()
             self.state_version += 1  # Increment version on state change
             # Include version in the outgoing message
             message["version"] = self.state_version
@@ -230,7 +230,7 @@ class ConnectionManager:
             self.drawing_state.clear()
             # Clear IP-based drawings too
             self.drawings_by_ip.clear()
-            self.last_update_time = asyncio.get_event_loop().time()
+            self.last_update_time = time.time()
             self.state_version += 1  # Increment version on state change
             # Include version in the outgoing message
             message["version"] = self.state_version
@@ -248,7 +248,7 @@ class ConnectionManager:
                 if removed_drawing in self.drawing_state:
                     self.drawing_state.remove(removed_drawing)
 
-                self.last_update_time = asyncio.get_event_loop().time()
+                self.last_update_time = time.time()
                 self.state_version += 1  # Increment version on state change
 
                 # Include version in the outgoing message
@@ -288,13 +288,13 @@ class ConnectionManager:
 
     async def check_connection(self, websocket: WebSocket) -> bool:
         try:
-            await websocket.send_json({"type": "ping", "timestamp": asyncio.get_event_loop().time()})
+            await websocket.send_json({"type": "ping", "timestamp": time.time()})
             return True
         except:
             return False
 
     async def remove_dead_connections(self):
-        current_time = asyncio.get_event_loop().time()
+        current_time = time.time()
         failed_connections = set()
 
         for client_type in list(self.active_connections.keys()):
@@ -354,7 +354,7 @@ class ConnectionManager:
         """Start sending regular heartbeats to all clients"""
         while True:
             try:
-                current_time = asyncio.get_event_loop().time()
+                current_time = time.time()
                 for client_type in self.active_connections:
                     for connection in list(self.active_connections[client_type]):
                         try:
@@ -451,7 +451,7 @@ async def health_check():
             "version": manager.state_version,
             "outdated_clients": outdated_clients,
             "last_update_time": manager.last_update_time,
-            "seconds_since_update": asyncio.get_event_loop().time() - manager.last_update_time
+            "seconds_since_update": time.time() - manager.last_update_time
         },
         "uptime_seconds": time.time() - START_TIME
     }
@@ -493,13 +493,13 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
                 continue
 
             # Update last ping time when we receive any message
-            manager.last_ping_times[websocket] = asyncio.get_event_loop().time()
+            manager.last_ping_times[websocket] = time.time()
 
             # Handle ping/pong messages specially
             if msg.get("type") == "ping":
                 await websocket.send_json({
                     "type": "pong",
-                    "timestamp": msg.get("timestamp", asyncio.get_event_loop().time())
+                    "timestamp": msg.get("timestamp", time.time())
                 })
                 continue
             elif msg.get("type") == "pong":
