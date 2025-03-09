@@ -19,23 +19,21 @@ const Config = {
         ACTIVITY_TIMEOUT: 5000 // Time before returning to idle checking
     },
     drawing: {
-        MIN_INTERPOLATION_DISTANCE: 0.006, // Increased to further reduce point density while drawing
+        MIN_INTERPOLATION_DISTANCE: 0.005, // Reduced to capture more detail during initial drawing
         SIMPLIFICATION: {
-            ENABLED: true, // Whether to simplify paths before sending to server
-            MAX_POINTS: 40, // Further reduced for more aggressive optimization
-            MIN_POINTS: 4, // Increased slightly to ensure enough points for smooth curves
-            MIN_LENGTH_FOR_SIMPLIFICATION: 6, // Reduced to catch even more cases
-            // Adaptive simplification parameters
-            AREA_THRESHOLD_FACTOR: 0.00003, // Reduced to preserve curve details
-            COMPLEXITY_FACTOR: 0.25, // Increased for more aggressive straight line optimization
-            MAX_COMPRESSION_RATIO: 0.90, // Increased compression (keep only 10% of points)
+            ENABLED: true,
+            MIN_LENGTH_FOR_SIMPLIFICATION: 4, // Slightly increased minimum points needed for simplification
             
-            // Enhanced compression parameters
-            ERROR_THRESHOLD: 0.0008, // Decreased to maintain curve fidelity
-            CURVATURE_WEIGHT: 0.8, // Increased significantly to favor curve preservation
-            PROGRESSIVE_SIMPLIFICATION: true, // Use a multi-pass approach for better results
-            COMBINE_CLOSE_POINTS: true, // Combine points that are very close together
-            CLOSE_POINTS_THRESHOLD: 0.002 // Increased for more aggressive point combining
+            // Adaptive simplification parameters - tuned for better balance
+            AREA_THRESHOLD_FACTOR: 0.00008, // Increased to preserve more details in complex areas
+            COMPLEXITY_FACTOR: 0.6, // Increased to better handle complex paths
+            MAX_COMPRESSION_RATIO: 0.85, // Reduced from 0.95 to preserve more detail
+            
+            // Enhanced compression parameters - optimized thresholds
+            ERROR_THRESHOLD: 0.0015, // Slightly increased for better performance
+            CURVATURE_WEIGHT: 0.65, // Reduced to balance between curves and straight lines
+            COMBINE_CLOSE_POINTS: true,
+            CLOSE_POINTS_THRESHOLD: 0.002 // Reduced for more precise point combination
         }
     }
 };

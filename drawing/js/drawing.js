@@ -131,270 +131,38 @@ const DrawingManager = (function () {
 
     // Improved line simplification logic
     function simplifyPath(points) {
-        if (points.length <= Config.drawing.SIMPLIFICATION.MIN_POINTS) {
+        if (points.length <= Config.drawing.SIMPLIFICATION.MIN_LENGTH_FOR_SIMPLIFICATION) {
             return points;
         }
-
-        // Filter close points first - this is most efficient
-        const filteredPoints = combineClosePoints(points);
-        
-        if (filteredPoints.length <= Config.drawing.SIMPLIFICATION.MIN_LENGTH_FOR_SIMPLIFICATION) {
-            return filteredPoints;
-        }
-
-        // Calculate path metrics to select the best algorithm and parameters
-        const pathMetrics = calculatePathMetrics(filteredPoints);
-        
-        // Choose simplification method based on path complexity
-        if (pathMetrics.complexityMetric > 1.5 && filteredPoints.length > 50) {
-            // For complex paths, use Ramer-Douglas-Peucker algorithm
-            return rdpSimplifyWithMinPoints(filteredPoints, 
-                adaptiveEpsilon(pathMetrics), 
-                Math.max(Config.drawing.SIMPLIFICATION.MIN_POINTS, 
-                         Math.floor(filteredPoints.length * (1 - Config.drawing.SIMPLIFICATION.MAX_COMPRESSION_RATIO))));
-        } else {
-            // For smoother paths, use optimized Visvalingam-Whyatt algorithm
-            return optimizedVisvalingamSimplify(filteredPoints, pathMetrics);
-        }
-    }
-
-    function adaptiveEpsilon(metrics) {
-        const baseEpsilon = Config.drawing.SIMPLIFICATION.ERROR_THRESHOLD || 0.003;
-        
-        // Scale epsilon based on path characteristics
-        const complexityFactor = Math.max(0.7, Math.min(1.3, 1 / (metrics.complexityMetric || 1)));
-        const lengthFactor = Math.max(0.8, Math.min(1.2, metrics.totalLength / 500));
-        
-        return baseEpsilon * complexityFactor * lengthFactor;
-    }
-
-    function combineClosePoints(points) {
-        if (points.length <= 2) return points;
-
-        const threshold = Config.drawing.SIMPLIFICATION.CLOSE_POINTS_THRESHOLD || 0.0001;
-        const result = [points[0]];
-        
-        // Track the last added point for better performance
-        let lastAddedIdx = 0;
-
-        for (let i = 1; i < points.length; i++) {
-            const prevPoint = points[lastAddedIdx];
-            const currentPoint = points[i];
-            const dx = currentPoint.x - prevPoint.x;
-            const dy = currentPoint.y - prevPoint.y;
-            const distSquared = dx * dx + dy * dy;
-
-            if (distSquared > threshold * threshold) {
-                result.push(currentPoint);
-                lastAddedIdx = i;
-            }
-        }
-
-        // Always include the last point if it's not already included
-        const lastPoint = points[points.length - 1];
-        if (result[result.length - 1] !== lastPoint) {
-            result.push(lastPoint);
-        }
-
-        return result;
-    }
-
-    function calculatePathMetrics(points) {
-        // Initialize metrics
-        const areas = [Infinity];
-        let totalLength = 0;
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        let totalArea = 0;
-        let maxArea = 0;
-
-        // Calculate area for each point and accumulate stats
-        for (let i = 1; i < points.length - 1; i++) {
-            const area = triangleArea(points[i-1], points[i], points[i+1]);
-            areas.push(area);
-            totalArea += area;
-            maxArea = Math.max(maxArea, area);
-        }
-        
-        areas.push(Infinity); // Last point always kept
-        
-        // Calculate length and bounding box
-        for (let i = 0; i < points.length; i++) {
-            const p = points[i];
-            minX = Math.min(minX, p.x);
-            minY = Math.min(minY, p.y);
-            maxX = Math.max(maxX, p.x);
-            maxY = Math.max(maxY, p.y);
-
-            if (i > 0) {
-                const prev = points[i-1];
-                const dx = p.x - prev.x;
-                const dy = p.y - prev.y;
-                totalLength += Math.sqrt(dx * dx + dy * dy);
-            }
-        }
-
-        // Calculate area variance and average
-        const avgArea = totalArea / Math.max(1, (points.length - 2));
-        let areaVariance = 0;
-
-        for (let i = 1; i < areas.length - 1; i++) {
-            areaVariance += Math.pow(areas[i] - avgArea, 2);
-        }
-        areaVariance /= Math.max(1, (points.length - 2));
-
-        // Calculate straightness metrics
-        const pathWidth = maxX - minX;
-        const pathHeight = maxY - minY;
-        const diagonalLength = Math.sqrt(pathWidth * pathWidth + pathHeight * pathHeight);
-        const straightnessRatio = diagonalLength / Math.max(0.0001, totalLength);
-
-        // Combine metrics into complexity
-        const areaComplexity = Math.sqrt(areaVariance) / Math.max(0.0001, avgArea);
-        const curvatureComplexity = 1 - straightnessRatio;
-        const curveWeight = Config.drawing.SIMPLIFICATION.CURVATURE_WEIGHT || 0.6;
-        const complexityMetric = (areaComplexity * (1 - curveWeight)) + (curvatureComplexity * curveWeight);
-
-        return {
-            areas,
-            avgArea,
-            maxArea,
-            areaVariance,
-            totalLength,
-            diagonalLength,
-            straightnessRatio,
-            complexityMetric,
-            boundingBox: { minX, minY, maxX, maxY, width: pathWidth, height: pathHeight }
-        };
-    }
-
-    // Optimized implementation of Visvalingam-Whyatt that uses an efficient data structure
-    function optimizedVisvalingamSimplify(points, metrics) {
-        if (points.length <= 2) return points;
-        
-        // Calculate adaptive threshold based on path characteristics
-        const complexityAdjustment = Math.min(1, Math.max(0.1, 
-            metrics.complexityMetric * Config.drawing.SIMPLIFICATION.COMPLEXITY_FACTOR || 1));
-            
-        let areaThreshold = metrics.avgArea * 
-            (Config.drawing.SIMPLIFICATION.AREA_THRESHOLD_FACTOR || 0.5) / complexityAdjustment;
-            
-        if (metrics.complexityMetric > 2) {
-            areaThreshold *= 0.5;
-        }
-
-        // Calculate minimum points to keep
-        const minPointsToKeep = Math.max(
-            Config.drawing.SIMPLIFICATION.MIN_POINTS || 3,
-            Math.floor(points.length * (1 - (Config.drawing.SIMPLIFICATION.MAX_COMPRESSION_RATIO || 0.8)))
-        );
-        
-        // Exit early if we're already below or at our point limit
-        if (points.length <= minPointsToKeep) {
-            return points;
-        }
-        
-        // Create array to track effective areas
-        const areas = new Array(points.length);
-        const toKeep = new Array(points.length).fill(true);
-        
-        // Calculate initial areas
-        for (let i = 1; i < points.length - 1; i++) {
-            areas[i] = triangleArea(points[i-1], points[i], points[i+1]);
-        }
-        
-        // Always keep the endpoints
-        areas[0] = areas[points.length - 1] = Infinity;
-        
-        // Build a sorted array of interior points by area
-        const pointsByArea = Array.from({ length: points.length - 2 }, (_, i) => i + 1)
-            .sort((a, b) => areas[a] - areas[b]);
-        
-        // Calculate how many points to remove
-        const pointsToRemove = Math.min(
-            points.length - minPointsToKeep,
-            pointsByArea.filter(i => areas[i] <= areaThreshold).length
-        );
-        
-        // Remove points in order of increasing area
-        for (let i = 0; i < pointsToRemove; i++) {
-            toKeep[pointsByArea[i]] = false;
-        }
-        
-        // Build the result array
-        const result = [];
-        for (let i = 0; i < points.length; i++) {
-            if (toKeep[i]) {
-                result.push(points[i]);
-            }
-        }
-        
-        return result;
+        // Use only Douglas-Peucker algorithm with error threshold from config
+        return rdpSimplify(points, Config.drawing.SIMPLIFICATION.ERROR_THRESHOLD);
     }
 
     // RDP algorithm with guaranteed minimum points
-    function rdpSimplifyWithMinPoints(points, epsilon, minPoints) {
-        // Handle simple cases
-        if (points.length <= 2 || points.length <= minPoints) return points;
+    function rdpSimplify(points, epsilon) {
+        if (points.length <= 2) return points;
         
-        // Calculate perpendicular distances for all points
-        const dMax = { index: 0, distance: 0 };
-        const lineStart = points[0];
-        const lineEnd = points[points.length - 1];
+        let maxDist = 0;
+        let index = 0;
+        const end = points.length - 1;
         
-        // Find the point with the maximum distance
-        for (let i = 1; i < points.length - 1; i++) {
-            const distance = perpendicularDistance(points[i], lineStart, lineEnd);
-            if (distance > dMax.distance) {
-                dMax.index = i;
-                dMax.distance = distance;
+        // Find the point with max distance from line between start and end
+        for (let i = 1; i < end; i++) {
+            const dist = perpendicularDistance(points[i], points[0], points[end]);
+            if (dist > maxDist) {
+                index = i;
+                maxDist = dist;
             }
         }
         
-        // If the maximum distance is greater than epsilon, recursively simplify
-        if (dMax.distance > epsilon) {
-            // Recursive case - split at the furthest point
-            const firstSegment = rdpSimplifyWithMinPoints(
-                points.slice(0, dMax.index + 1), 
-                epsilon, 
-                Math.max(2, Math.floor(minPoints * (dMax.index / points.length)))
-            );
-            
-            const secondSegment = rdpSimplifyWithMinPoints(
-                points.slice(dMax.index), 
-                epsilon, 
-                Math.max(2, Math.floor(minPoints * ((points.length - dMax.index) / points.length)))
-            );
-            
-            // Combine the two segments, removing the duplicate point
-            return [...firstSegment.slice(0, -1), ...secondSegment];
-        } 
-        // If we're already at or below the minimum points, return the original
-        else if (points.length <= minPoints) {
-            return points;
+        // If max distance is greater than epsilon, recursively simplify
+        if (maxDist > epsilon) {
+            const leftPart = rdpSimplify(points.slice(0, index + 1), epsilon);
+            const rightPart = rdpSimplify(points.slice(index), epsilon);
+            return [...leftPart.slice(0, -1), ...rightPart];
         }
-        // Otherwise, we need to keep the most significant points to meet the minimum
-        else {
-            // Calculate the significance of each interior point
-            const significance = [];
-            for (let i = 1; i < points.length - 1; i++) {
-                significance.push({
-                    index: i,
-                    distance: perpendicularDistance(points[i], lineStart, lineEnd)
-                });
-            }
-            
-            // Sort by distance (most significant first)
-            significance.sort((a, b) => b.distance - a.distance);
-            
-            // Select the top points to keep
-            const toKeep = new Set([0, points.length - 1]); // Always keep endpoints
-            for (let i = 0; i < Math.min(significance.length, minPoints - 2); i++) {
-                toKeep.add(significance[i].index);
-            }
-            
-            // Create the result with the kept points (in original order)
-            return points.filter((_, i) => toKeep.has(i));
-        }
+        
+        return [points[0], points[end]];
     }
     
     // Calculate perpendicular distance from a point to a line
