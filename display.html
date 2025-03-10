@@ -57,8 +57,9 @@
     <div id="status">Connecting...</div>
     <div id="controls">
         <button onclick="clearCanvas()">Clear Canvas</button>
+        <button onclick="toggleQRCode()">Toggle QR Code</button>
     </div>
-
+    <img id="qr" src="qr.png" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1000;">
     <script>
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
@@ -382,7 +383,10 @@
             // Removed local storage saving
         }
 
-        // Remove localStorage functions completely
+        function toggleQRCode() {
+            const qr = document.getElementById('qr');
+            qr.style.display = (qr.style.display === 'none' || qr.style.display === '') ? 'block' : 'none';
+        }
         
         window.onresize = () => {
             canvas.width = window.innerWidth;
