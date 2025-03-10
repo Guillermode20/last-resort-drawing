@@ -77,45 +77,40 @@ const DrawingManager = (function () {
         if (!isDrawing) return;
         isDrawing = false;
 
-        // Only process the drawing when it's complete
         if (currentPoints.length > 0) {
-            // Create the drawing data with all points for local rendering
-            const localDrawData = {
-                type: 'draw',
-                points: [...currentPoints], // Make a copy of the points
-                color: currentColor,
-                width: currentWidth
-            };
-            
-            // Add the full-detail version to our local state for rendering
-            drawingState.push(localDrawData);
-            localDrawings.push(localDrawData);
-            
-            // Apply simplification for network transmission if enabled and we have enough points
-            let pointsToSend = currentPoints;
-            if (Config.drawing.SIMPLIFICATION.ENABLED && 
+            // Apply simplification if enabled and enough points exist
+            let simplifiedPoints = currentPoints;
+            if (Config.drawing.SIMPLIFICATION.ENABLED &&
                 currentPoints.length > Config.drawing.SIMPLIFICATION.MIN_LENGTH_FOR_SIMPLIFICATION) {
-                
-                // Simplify the path for sending to server
-                pointsToSend = simplifyPath(currentPoints);
-                
+                simplifiedPoints = simplifyPath(currentPoints);
                 console.log(
-                    `Path simplified: ${currentPoints.length} points reduced to ${pointsToSend.length} points ` +
-                    `(${Math.round((pointsToSend.length / currentPoints.length) * 100)}%)`
+                    `Path simplified: ${currentPoints.length} points reduced to ${simplifiedPoints.length} points ` +
+                    `(${Math.round((simplifiedPoints.length / currentPoints.length) * 100)}%)`
                 );
             }
-            
-            // Send the simplified version to the server
-            const drawData = {
+
+            // Use the simplified points for local rendering
+            const localDrawData = {
                 type: 'draw',
-                points: pointsToSend,
+                points: simplifiedPoints,
                 color: currentColor,
                 width: currentWidth
             };
-            
+            drawingState.push(localDrawData);
+            localDrawings.push(localDrawData);
+
+            // Send simplified drawing to the server
+            const drawData = {
+                type: 'draw',
+                points: simplifiedPoints,
+                color: currentColor,
+                width: currentWidth
+            };
             NetworkManager.sendDrawing(drawData);
-            
-            // Clear the current points array for the next drawing
+
+            // Refresh the canvas immediately so changes are visible
+            redrawCanvasWithState();
+
             currentPoints = [];
         }
     }
@@ -138,31 +133,32 @@ const DrawingManager = (function () {
         return rdpSimplify(points, Config.drawing.SIMPLIFICATION.ERROR_THRESHOLD);
     }
 
-    // RDP algorithm with guaranteed minimum points
+    // Improved iterative implementation of RDP simplification
     function rdpSimplify(points, epsilon) {
         if (points.length <= 2) return points;
-        
-        let maxDist = 0;
-        let index = 0;
-        const end = points.length - 1;
-        
-        // Find the point with max distance from line between start and end
-        for (let i = 1; i < end; i++) {
-            const dist = perpendicularDistance(points[i], points[0], points[end]);
-            if (dist > maxDist) {
-                index = i;
-                maxDist = dist;
+
+        const kept = new Array(points.length).fill(false);
+        kept[0] = kept[points.length - 1] = true;
+        const stack = [[0, points.length - 1]];
+
+        while (stack.length) {
+            const [start, end] = stack.pop();
+            let maxDist = 0;
+            let index = -1;
+            for (let i = start + 1; i < end; i++) {
+                const dist = perpendicularDistance(points[i], points[start], points[end]);
+                if (dist > maxDist) {
+                    maxDist = dist;
+                    index = i;
+                }
+            }
+            if (maxDist > epsilon) {
+                kept[index] = true;
+                stack.push([start, index]);
+                stack.push([index, end]);
             }
         }
-        
-        // If max distance is greater than epsilon, recursively simplify
-        if (maxDist > epsilon) {
-            const leftPart = rdpSimplify(points.slice(0, index + 1), epsilon);
-            const rightPart = rdpSimplify(points.slice(index), epsilon);
-            return [...leftPart.slice(0, -1), ...rightPart];
-        }
-        
-        return [points[0], points[end]];
+        return points.filter((_, i) => kept[i]);
     }
     
     // Calculate perpendicular distance from a point to a line
