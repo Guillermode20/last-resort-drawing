@@ -2,63 +2,22 @@
 
 ## How It Works
 
-1.  **Drawing Input (drawing.html):**
+The project uses real-time WebSocket connections to synchronize drawing to enable collaboration. 
 
-    *   User interacts with the canvas (mouse/touch) on the `drawing.html` page.
+- **Server Setup**:  
+  A FastAPI server (run via Uvicorn) manages WebSocket connections and maintains a versioned drawing state. It can be hosted locally or on the Google Cloud Virtual Machine. The server handles state synchronization, heartbeat monitoring, and memory management by pruning old drawing data.
 
-2.  **Point Capture & Transformation (drawing.html):**
+- **Drawing Interface**:  
+  The `drawing.html` page is designed for mobile devices or tablets. Users can draw using touch or mouse events, and the corresponding JavaScript modules capture drawing events (start, draw, end, undo). These events are sent as drawing data to the server via WebSocket.
 
-    *   Application captures the coordinates of the drawing input (mouse/touch positions).
-    *   Coordinates are transformed into normalized virtual canvas coordinates (range 0-1).
+- **Multiple Instances & Syncing**:  
+  Multiple devices running `drawing.html` can draw concurrently. The server merges these inputs and broadcasts the updated drawing state to all connected clients, ensuring real-time synchronization across all drawing devices.
 
-3.  **Drawing on Canvas (drawing.html):**
+- **Collaborative Whiteboard Display**:  
+  The `display.html` is meant for the large screen in the bar where the collaborative drawing is shown live as a whiteboard. It receives and renders the latest drawing data from the server in real time.
 
-    *   The transformed input is drawn onto the local canvas in `drawing.html`, providing immediate visual feedback to the user.
-
-4.  **Data Batching (drawing.html):**
-
-    *   The drawn points are batched into a data structure for efficient transmission.
-
-5.  **WebSocket Transmission (drawing.html):**
-
-    *   The drawing data (points, color, width, etc.) is sent to the WebSocket server as a JSON message.
-
-6.  **Server Broadcast:**
-
-    *   The WebSocket server receives the drawing data.
-    *   The server broadcasts the drawing data to all connected clients (both drawing and display clients).
-
-7.  **Display Client Reception (display.html):**
-
-    *   The `display.html` page receives the drawing data via WebSocket.
-
-8.  **Drawing on Display Canvas (display.html):**
-
-    *   The display client transforms the normalized coordinates received from the server back into canvas coordinates appropriate for its canvas size.
-    *   The transformed coordinates are used to draw lines on the display client's canvas, replicating the drawing.
-
-9. **State Management:**
-    * **Drawing Client (drawing.html):**
-        * The drawing client stores the drawing commands in a local array called `drawingState`.
-    * **Display Client (display.html):**
-        * The display client stores the drawing commands in a local array called `drawingState`.
-
-10. **Clear Canvas:**
-
-    *   A "clear" command is sent via WebSocket to the server.
-    *   The server broadcasts the clear command to all clients.
-    *   Upon receiving the clear command:
-        *   Both the drawing and display canvases are cleared.
-        *   The `drawingState` arrays on both drawing and display clients are emptied.
-
-11. **Initial State Request:**
-
-    *   When a client connects to the server:
-        *   It sends a "join" message via WebSocket.
-            *   The `drawing.html` page sends a "join" message.
-            *   The `display.html` page sends a "join" message.
-    *   The server, upon receiving a "join" message, sends the current `drawingState` to the requesting client. This allows new clients to catch up to the current drawing.
-
+- **State Management & Undo**:  
+  The server manages a versioned state to resolve conflicts and supports undo operations for individual drawing sessions. It also uses differential updates for efficient state sync among the connected clients.
 
 ## Getting Started
 
@@ -113,7 +72,6 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
 This command starts the Uvicorn server, using `main.py` as the entry point and enabling hot reloading for development.
-```
 
 ### Deactivating the Virtual Environment
 
