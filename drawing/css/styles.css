@@ -79,6 +79,7 @@ button:hover {
     color: #fff;
     border-radius: 4px;
     font-family: Arial, sans-serif;
+    font-size: 12px;
     z-index: 1000;
 }
 
@@ -87,18 +88,19 @@ button:hover {
     top: 20px;
     left: 20px;
     background: rgba(0, 0, 0, 0.5);
-    padding: 10px;
+    padding: 8px;
     border-radius: 8px;
     display: flex;
-    gap: 10px;
+    gap: 8px;
     align-items: center;
     z-index: 1000;
 }
 
 #zoom-value {
     color: white;
-    width: 50px;
+    width: 40px;
     text-align: center;
+    font-size: 12px;
 }
 
 /* Specific styles for undo button */
@@ -115,4 +117,95 @@ button:hover {
 
 #undo-btn:hover {
     background: rgba(255, 50, 50, 0.8);
+}
+
+/* Mobile-specific styles */
+#mode-toggle {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    border: 1px solid white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    z-index: 1001;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#mode-toggle.draw-mode {
+    background: rgba(50, 200, 100, 0.7);
+}
+
+#mode-toggle.pan-mode {
+    background: rgba(100, 100, 255, 0.7);
+}
+
+.mode-icon {
+    width: 16px;
+    height: 16px;
+}
+
+/* Media queries for mobile responsiveness */
+@media (max-width: 768px) {
+    #controls {
+        bottom: 10px;
+        padding: 8px;
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 90vw;
+    }
+    
+    .color-btn {
+        width: 25px;
+        height: 25px;
+    }
+    
+    #width-control {
+        width: 80px;
+    }
+    
+    button {
+        padding: 6px 10px;
+        font-size: 12px;
+    }
+    
+    #zoom-controls {
+        top: 10px;
+        left: 10px;
+        padding: 6px;
+        gap: 4px;
+    }
+    
+    #zoom-value {
+        width: 30px;
+        font-size: 11px;
+    }
+    
+    #status {
+        display: none;
+    }
+}
+
+/* Pinch-to-zoom indicator overlay */
+.pinch-indicator {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    padding: 10px 15px;
+    border-radius: 20px;
+    z-index: 1002;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.pinch-indicator.active {
+    opacity: 1;
 }

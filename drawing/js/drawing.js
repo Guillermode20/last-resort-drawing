@@ -8,10 +8,11 @@ const DrawingManager = (function () {
     let drawingState = [];
     let stateVersion = 0;
     let localDrawings = []; // Track local drawings for better undo UX
+    let dirtyRect = null; // Track the area that needs to be redrawn
 
     function startDrawing(e) {
-        // Don't start drawing if we're panning
-        if (isPanning || (e.button === 1 || (e.button === 0 && e.altKey))) return;
+        // Don't start drawing if we're panning or in pan mode
+        if (isPanning || (e.button === 1 || (e.button === 0 && e.altKey)) || !UIManager.getDrawingMode()) return;
 
         // Mark activity for state check optimization
         NetworkManager.markActivity();
@@ -199,21 +200,25 @@ const DrawingManager = (function () {
     }
 
     function startPanning(e) {
-        if (e.button === 1 || (e.button === 0 && e.altKey)) { // Middle button or Alt+Left click
+        if (e.button === 1 || (e.button === 0 && e.altKey) || !UIManager.getDrawingMode()) {
             isPanning = true;
-            const x = e.touches ? e.touches[0].clientX : e.clientX;
-            const y = e.touches ? e.touches[0].clientY : e.clientY;
+            const x = e.touches ? (e.touches.length === 2 ? 
+                (e.touches[0].clientX + e.touches[1].clientX) / 2 : e.touches[0].clientX) : e.clientX;
+            const y = e.touches ? (e.touches.length === 2 ? 
+                (e.touches[0].clientY + e.touches[1].clientY) / 2 : e.touches[0].clientY) : e.clientY;
             lastPanPoint = { x, y };
-            e.preventDefault();
+            if (e.preventDefault) e.preventDefault();
         }
     }
 
     function pan(e) {
         if (!isPanning) return;
-        e.preventDefault();
+        if (e.preventDefault) e.preventDefault();
 
-        const x = e.touches ? e.touches[0].clientX : e.clientX;
-        const y = e.touches ? e.touches[0].clientY : e.clientY;
+        const x = e.touches ? (e.touches.length === 2 ? 
+            (e.touches[0].clientX + e.touches[1].clientX) / 2 : e.touches[0].clientX) : e.clientX;
+        const y = e.touches ? (e.touches.length === 2 ? 
+            (e.touches[0].clientY + e.touches[1].clientY) / 2 : e.touches[0].clientY) : e.clientY;
 
         const dx = x - lastPanPoint.x;
         const dy = y - lastPanPoint.y;
@@ -249,9 +254,68 @@ const DrawingManager = (function () {
         drawingState = []; // Clear local state
     }
 
+    function updateDirtyRect(points, width) {
+        if (!points || points.length === 0) return;
+
+        let minX = points[0].x * Config.canvas.VIRTUAL_WIDTH;
+        let minY = points[0].y * Config.canvas.VIRTUAL_HEIGHT;
+        let maxX = minX;
+        let maxY = minY;
+
+        for (let i = 1; i < points.length; i++) {
+            const x = points[i].x * Config.canvas.VIRTUAL_WIDTH;
+            const y = points[i].y * Config.canvas.VIRTUAL_HEIGHT;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+
+        // Add line width to the dirty rectangle
+        const lineWidthOffset = width * CanvasManager.getZoomLevel();
+        minX -= lineWidthOffset;
+        minY -= lineWidthOffset;
+        maxX += lineWidthOffset;
+        maxY += lineWidthOffset;
+
+        const newDirtyRect = {
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY
+        };
+
+        if (dirtyRect === null) {
+            dirtyRect = newDirtyRect;
+        } else {
+            dirtyRect.x = Math.min(dirtyRect.x, newDirtyRect.x);
+            dirtyRect.y = Math.min(dirtyRect.y, newDirtyRect.y);
+            dirtyRect.width = Math.max(dirtyRect.x + dirtyRect.width, newDirtyRect.x + newDirtyRect.width) - dirtyRect.x;
+            dirtyRect.height = Math.max(dirtyRect.y + dirtyRect.height, newDirtyRect.y + newDirtyRect.height) - dirtyRect.y;
+        }
+    }
+
     function redrawCanvasWithState() {
-        // Clear with proper transform and draw border
-        CanvasManager.clearAndDrawBorder();
+        if (dirtyRect === null) {
+            CanvasManager.clearAndDrawBorder();
+        } else {
+            // Save the current transform
+            CanvasManager.getContext().save();
+
+            // Reset the transform to identity matrix
+            CanvasManager.getContext().setTransform(1, 0, 0, 1, 0, 0);
+
+            // Clear only the dirty rectangle
+            CanvasManager.getContext().clearRect(
+                dirtyRect.x * CanvasManager.getZoomLevel(),
+                dirtyRect.y * CanvasManager.getZoomLevel(),
+                dirtyRect.width * CanvasManager.getZoomLevel(),
+                dirtyRect.height * CanvasManager.getZoomLevel()
+            );
+
+            // Restore the transform
+            CanvasManager.getContext().restore();
+        }
 
         const ctx = CanvasManager.getContext();
 
@@ -272,6 +336,12 @@ const DrawingManager = (function () {
                 ctx.stroke();
             }
         });
+
+        clearDirtyRect();
+    }
+
+    function clearDirtyRect() {
+        dirtyRect = null;
     }
 
     function updateDrawingState(newState, version) {
@@ -314,32 +384,16 @@ const DrawingManager = (function () {
         // Add to our drawing state
         drawingState.push(drawData);
 
+        // Update dirty rectangle
+        updateDirtyRect(drawData.points, drawData.width);
+
         // Update our state version
         if (drawData.version > stateVersion) {
             stateVersion = drawData.version;
         }
 
-        // Draw the stroke on our canvas
-        const ctx = CanvasManager.getContext();
-        const points = drawData.points;
-
-        if (points && points.length > 0) {
-            if (points.length === 1) {
-                // Draw a single point
-                drawPoint({ x: points[0].x, y: points[0].y }, drawData.color, drawData.width);
-            } else {
-                // Draw a line
-                ctx.beginPath();
-                ctx.strokeStyle = drawData.color;
-                ctx.lineWidth = drawData.width;
-                ctx.moveTo(points[0].x * Config.canvas.VIRTUAL_WIDTH, points[0].y * Config.canvas.VIRTUAL_HEIGHT);
-
-                for (let i = 1; i < points.length; i++) {
-                    ctx.lineTo(points[i].x * Config.canvas.VIRTUAL_WIDTH, points[i].y * Config.canvas.VIRTUAL_HEIGHT);
-                }
-                ctx.stroke();
-            }
-        }
+        // Redraw the canvas
+        redrawCanvasWithState();
     }
 
     function undoLastDrawing() {

@@ -2,13 +2,18 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Drawing Interface with Zoom</title>
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
     <canvas id="canvas"></canvas>
     <div id="status">Connecting...</div>
+    
+    <div id="mode-toggle" class="draw-mode">
+        <span class="mode-icon">✏️</span> Draw
+    </div>
+    
     <div id="controls">
         <div class="color-btn active" style="background: #ff0000" data-color="#ff0000"></div>
         <div class="color-btn" style="background: #00ff00" data-color="#00ff00"></div>
@@ -20,6 +25,7 @@
         <input type="range" id="width-control" min="1" max="50" value="5">
         <button id="undo-btn" title="Undo (Ctrl+Z)">Undo</button>
     </div>
+    
     <div id="zoom-controls">
         <button id="zoom-in-btn">+</button>
         <span id="zoom-value">90%</span>

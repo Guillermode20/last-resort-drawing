@@ -72,6 +72,13 @@ const CanvasManager = (function () {
         ctx.strokeRect(0, 0, Config.canvas.VIRTUAL_WIDTH, Config.canvas.VIRTUAL_HEIGHT);
     }
 
+    function setZoom(newZoom) {
+        zoomLevel = Math.max(Config.canvas.MIN_ZOOM, Math.min(Config.canvas.MAX_ZOOM, newZoom));
+        UIManager.updateZoomDisplay(zoomLevel);
+        updateScale();
+        DrawingManager.redrawCanvasWithState();
+    }
+
     function adjustZoom(delta) {
         const newZoom = Math.max(Config.canvas.MIN_ZOOM, Math.min(Config.canvas.MAX_ZOOM, zoomLevel + delta));
         zoomLevel = newZoom;
@@ -129,6 +136,7 @@ const CanvasManager = (function () {
         resize,
         clearAndDrawBorder,
         adjustZoom,
+        setZoom,
         resetZoom,
         updatePan,
         getContext,

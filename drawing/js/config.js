@@ -25,9 +25,9 @@ const Config = {
             MIN_LENGTH_FOR_SIMPLIFICATION: 4, // Slightly increased minimum points needed for simplification
             
             // Adaptive simplification parameters - tuned for better balance
-            AREA_THRESHOLD_FACTOR: 0.00008, // Increased to preserve more details in complex areas
+            AREA_THRESHOLD_FACTOR: 0.0008, // Increased to preserve more details in complex areas
             COMPLEXITY_FACTOR: 0.6, // Increased to better handle complex paths
-            MAX_COMPRESSION_RATIO: 0.85, // Reduced from 0.95 to preserve more detail
+            MAX_COMPRESSION_RATIO: 0.50, // Reduced from 0.95 to preserve more detail
             
             // Enhanced compression parameters - optimized thresholds
             ERROR_THRESHOLD: 0.0015, // Slightly increased for better performance
@@ -35,5 +35,12 @@ const Config = {
             COMBINE_CLOSE_POINTS: true,
             CLOSE_POINTS_THRESHOLD: 0.002 // Reduced for more precise point combination
         }
+    },
+    mobile: {
+        TOUCH_DISTANCE_THRESHOLD: 5, // Minimum distance to consider a touch as a move
+        PINCH_ZOOM_SENSITIVITY: 1.0, // Sensitivity of pinch-to-zoom gesture
+        DEFAULT_DRAWING_MODE: true, // Start in drawing mode (true) or pan mode (false)
+        DOUBLE_TAP_DELAY: 300, // Milliseconds to consider a double tap
+        LONG_PRESS_DURATION: 500 // Milliseconds to consider as a long press
     }
 };
